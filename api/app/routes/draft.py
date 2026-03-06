@@ -22,7 +22,7 @@ from app.repositories.draft_repo import (
     update_draft_section,
     update_question_status,
 )
-from app.repositories.outline_repo import ensure_project_outline, replace_citations_for_sections
+from app.repositories.outline_repo import ensure_project_outline
 from app.repositories.project_repo import get_project
 from app.repositories.rfp_repo import ensure_rfp_extraction, list_requirement_items
 from app.schemas.draft import (
@@ -32,6 +32,10 @@ from app.schemas.draft import (
     DraftChatResponse,
     DraftGenerateRequest,
     DraftGenerateResponse,
+    DraftPlanRequirementRead,
+    DraftPlanResponse,
+    DraftPlanSourceRead,
+    DraftSectionPlanRead,
     DraftSectionRead,
     DraftSectionUpdate,
     OpenQuestionRead,
@@ -39,16 +43,79 @@ from app.schemas.draft import (
     RewriteRequest,
     RewriteResponse,
 )
+from app.services.draft_plan_service import (
+    DraftPlanResult,
+    DraftSectionPlan,
+    apply_section_overrides,
+    build_draft_plan,
+)
 from app.services.chat_edit_service import ChatEditError, build_chat_edit
 from app.services.draft_service import DraftGenerationError, build_generated_draft
 from app.services.llm_service import LLMService, get_llm_service
 from app.services.retrieval_service import (
-    build_citation_payloads_from_retrieved,
     retrieve_project_chunks,
 )
 from app.services.rewrite_service import build_rewrite_suggestion
 
 router = APIRouter(tags=["draft"])
+
+
+def _source_label(title: str, page_start: int | None, page_end: int | None) -> str:
+    if page_start and page_end:
+        if page_start == page_end:
+            return f"{title} p.{page_start}"
+        return f"{title} p.{page_start}-{page_end}"
+    return title
+
+
+def _build_plan_response(project_id: int, result: DraftPlanResult) -> DraftPlanResponse:
+    def build_source(item, *, selected: bool = True) -> DraftPlanSourceRead:
+        return DraftPlanSourceRead(
+            chunk_id=item.chunk.id,
+            document_kind=item.chunk.document_kind,
+            document_id=item.chunk.document_id,
+            title=item.chunk.title,
+            route_label=item.chunk.route_label,
+            page_start=item.chunk.page_start,
+            page_end=item.chunk.page_end,
+            score=item.score,
+            label=_source_label(
+                item.chunk.title,
+                item.chunk.page_start,
+                item.chunk.page_end,
+            ),
+            snippet=item.chunk.text_content[:280],
+            selected=selected,
+        )
+
+    def build_section(section_plan: DraftSectionPlan) -> DraftSectionPlanRead:
+        return DraftSectionPlanRead(
+            section_id=section_plan.section.id,
+            heading_text=section_plan.heading_text,
+            depth=section_plan.section.depth,
+            heading_path=section_plan.heading_path,
+            query_text=section_plan.query_text,
+            matched_requirements=[
+                DraftPlanRequirementRead(
+                    id=requirement.id,
+                    requirement_no=requirement.requirement_no,
+                    name=requirement.name,
+                    definition=requirement.definition,
+                    details=requirement.details,
+                    selected=True,
+                )
+                for requirement in section_plan.matched_requirements
+            ],
+            rfp_sources=[build_source(item) for item in section_plan.rfp_sources],
+            library_sources=[build_source(item) for item in section_plan.library_sources],
+        )
+
+    return DraftPlanResponse(
+        project_id=project_id,
+        ready=result.ready,
+        warnings=result.warnings,
+        sections=[build_section(section_plan) for section_plan in result.sections],
+    )
 
 
 @router.get("/projects/{project_id}/draft/sections", response_model=list[DraftSectionRead])
@@ -60,6 +127,27 @@ async def read_draft_sections(
         raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
     ensure_project_workspace(db, project)
     return list_draft_sections(db, project_id)
+
+
+@router.get("/projects/{project_id}/draft/plan", response_model=DraftPlanResponse)
+async def read_draft_plan(
+    project_id: int, db: Session = Depends(get_db)
+) -> DraftPlanResponse:
+    project = get_project(db, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+
+    sections = ensure_project_outline(db, project_id)
+    extraction = ensure_rfp_extraction(db, project_id)
+    requirements = list_requirement_items(db, project_id)
+    plan = build_draft_plan(
+        db=db,
+        project_id=project_id,
+        sections=sections,
+        extraction=extraction,
+        requirements=requirements,
+    )
+    return _build_plan_response(project_id, plan)
 
 
 @router.post("/projects/{project_id}/draft/generate", response_model=DraftGenerateResponse)
@@ -78,33 +166,34 @@ async def generate_draft(
     sections = ensure_project_outline(db, project_id)
     extraction = ensure_rfp_extraction(db, project_id)
     requirements = list_requirement_items(db, project_id)
-    evaluation_items = list_evaluation_items(db, project_id)
-    if not extraction.raw_text.strip():
-        raise HTTPException(status_code=400, detail="RFP extraction is empty. Upload and extract an RFP first.")
-    retrieved_by_section = {
-        section.id: retrieve_project_chunks(db, project_id=project_id, query=section.title, limit=4)
-        for section in sections
-    }
-    replace_citations_for_sections(
-        db,
+    plan = build_draft_plan(
+        db=db,
         project_id=project_id,
-        section_ids=[section.id for section in sections],
-        citations=[
-            citation
-            for section in sections
-            for citation in build_citation_payloads_from_retrieved(
-                outline_section_id=section.id,
-                retrieved=retrieved_by_section.get(section.id, []),
-            )
-        ],
+        sections=sections,
+        extraction=extraction,
+        requirements=requirements,
+    )
+    if not plan.ready:
+        detail = " ".join(plan.warnings) or "Draft generation prerequisites are not ready."
+        raise HTTPException(status_code=400, detail=detail)
+
+    overrides_by_section_id = {
+        override.section_id: {
+            "requirement_ids": set(override.requirement_ids),
+            "chunk_ids": set(override.chunk_ids),
+        }
+        for override in payload.section_overrides
+    }
+    requirements_by_section, retrieved_by_section = apply_section_overrides(
+        plan.sections,
+        overrides_by_section_id=overrides_by_section_id,
     )
     try:
         content_md, question_texts = build_generated_draft(
             project_name=project.name,
             sections=sections,
             extraction=extraction,
-            requirements=requirements,
-            evaluation_items=evaluation_items,
+            requirements_by_section=requirements_by_section,
             retrieved_by_section=retrieved_by_section,
             llm_service=llm_service,
         )

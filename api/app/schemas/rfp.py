@@ -92,3 +92,7 @@ class RfpExtractionRead(RfpExtractionBase):
 class RfpFileUploadResponse(BaseModel):
     extraction: RfpExtractionRead
     file: ProjectFileRead
+
+
+class RfpExtractionRunRequest(BaseModel):
+    file_ids: list[int] = Field(default_factory=list)

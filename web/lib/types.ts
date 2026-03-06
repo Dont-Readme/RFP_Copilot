@@ -79,10 +79,10 @@ export type DraftSection = {
 export type OutlineSection = {
   id: number;
   project_id: number;
-  parent_id: number | null;
   sort_order: number;
+  depth: number;
+  display_label: string;
   title: string;
-  needs_search: boolean;
   created_at: string;
   updated_at: string;
 };
@@ -115,6 +115,47 @@ export type DraftChatMessage = {
   selection_text: string | null;
   applied_at: string | null;
   created_at: string;
+};
+
+export type DraftPlanRequirement = {
+  id: number;
+  requirement_no: string;
+  name: string;
+  definition: string;
+  details: string;
+  selected: boolean;
+};
+
+export type DraftPlanSource = {
+  chunk_id: number;
+  document_kind: "rfp" | "library";
+  document_id: number;
+  title: string;
+  route_label: string | null;
+  page_start: number | null;
+  page_end: number | null;
+  score: number;
+  label: string;
+  snippet: string;
+  selected: boolean;
+};
+
+export type DraftSectionPlan = {
+  section_id: number;
+  heading_text: string;
+  depth: number;
+  heading_path: string[];
+  query_text: string;
+  matched_requirements: DraftPlanRequirement[];
+  rfp_sources: DraftPlanSource[];
+  library_sources: DraftPlanSource[];
+};
+
+export type DraftPlanResult = {
+  project_id: number;
+  ready: boolean;
+  warnings: string[];
+  sections: DraftSectionPlan[];
 };
 
 export type RfpExtraction = {
@@ -187,6 +228,15 @@ export type SearchRunResult = {
 export type DraftGenerateResult = {
   section: DraftSection;
   questions: OpenQuestion[];
+};
+
+export type DraftGeneratePayload = {
+  mode: string;
+  section_overrides?: Array<{
+    section_id: number;
+    requirement_ids: number[];
+    chunk_ids: number[];
+  }>;
 };
 
 export type DraftChatTurn = {

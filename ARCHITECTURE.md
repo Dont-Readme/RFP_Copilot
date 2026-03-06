@@ -26,11 +26,14 @@
 
 ## 4. 데이터 흐름(주요 시나리오)
 1. 공고/RFP와 회사 자료 업로드 → 텍스트 추출/로컬 chunk 저장
-2. 공고 파일 role과 routed chunk를 사용한 `사업 개요 / 요구사항 / 평가항목` section별 OpenAI structured extraction → 사용자 검토/확정
-3. 업로드 문서 chunk retrieval → 섹션별 컨텍스트 조합
-4. 추출된 RFP + retrieved chunk를 사용한 OpenAI 초안 생성 → OpenQuestion/시스템 표기 삽입
-5. 편집기에서 선택 구간 기준 AI chat/apply 수정 → 적용/취소
-6. Export → 미리보기 → 다운로드
+2. 사용자가 업로드 완료 파일 중 추출 대상만 체크 → 공고 파일 role과 routed chunk를 사용한 `사업 개요 템플릿 / 요구사항` section별 OpenAI structured extraction → 사용자 검토/확정
+3. 사용자가 `Outline`에서 `depth/title`를 조정하면 `display_label`은 자동 번호로 계산되어 저장
+4. `Draft`에서 추출 상태 + 연결 자료 + 저장된 목차를 확인한 뒤 초안 생성 실행
+5. `draft/plan`에서 목차별 관련 요구사항과 RFP/회사 자료 chunk를 추천하고 사용자가 포함·제외를 조정
+6. 업로드 문서 chunk retrieval → 섹션별 컨텍스트 조합
+7. 추출된 RFP + 선택된 retrieved chunk를 사용한 section별 OpenAI 초안 생성 → OpenQuestion/시스템 표기 삽입
+8. 편집기에서 선택 구간 기준 AI chat/apply 수정 → 적용/취소
+9. Export → 미리보기 → 다운로드
 
 ## 5. API 설계(해당 시)
 - 현재 구현:
@@ -48,6 +51,7 @@
   - `/api/projects/{project_id}/outline` `GET/POST`
   - `/api/projects/{project_id}/search/citations` `GET`
   - `/api/projects/{project_id}/search/run` `POST`
+  - `/api/projects/{project_id}/draft/plan` `GET`
   - `/api/projects/{project_id}/draft/generate` `POST`
   - `/api/projects/{project_id}/draft/sections` `GET`
   - `/api/projects/{project_id}/draft/sections/{section_id}` `PATCH`
@@ -88,10 +92,14 @@
 - RFP 추출은 routed chunk를 묶어 섹션별 OpenAI structured output으로 구현한다.
 - RFP 프롬프트는 `api/app/services/rfp_prompts.py`에 모아 사용자 조정 지점을 명확히 둔다.
 - 공고 파일 업로드는 저장과 chunk 준비까지만 수행하고, 실제 추출은 사용자가 명시적으로 실행해 토큰 사용을 제어한다.
+- RFP 추출은 사용자가 체크한 파일만 대상으로 수행해 불필요한 토큰 사용과 timeout 위험을 줄인다.
+- OpenAI request timeout 기본값은 120초로 두고, section 추출은 timeout 시 1회 재시도한다.
 - draft 편집은 전체 초안을 다시 생성하지 않고, 선택 구간과 주변 문맥만 사용한 chat/apply로 토큰 사용을 낮춘다.
 - 매핑 검증은 단순 토큰 겹침 기반 휴리스틱으로 시작해 후속 고도화를 열어 둔다.
 - Export는 세션별 폴더를 만들어 preview와 산출물 경로를 함께 관리한다.
-- outline은 flat list로 시작하고, `parent_id`를 유지해 트리 확장 여지를 남긴다.
+- outline은 구조 정의 전용으로 두고, ordered flat list + `depth`로 계층을 표현하며 번호는 `display_label`에 자동 계산해 저장한다.
+- 검색/인용은 outline에서 제거하고, 생성 제어는 draft preparation 영역으로 이동한다.
+- draft 생성은 먼저 목차별 plan을 계산하고, 사용자가 고른 requirement/chunk만으로 section별 generation을 수행한다.
 - search는 현재 외부 웹 검색이 아니라 프로젝트에 저장된 RFP/연결 자료 chunk를 lexical retrieval로 재활용해 Citation을 생성한다.
 - OpenAI 키는 `api/.env`에서 읽고, `/api/health/openai`로 모델 접근을 검증한다.
 - retrieval은 우선 로컬 파일 chunk + SQLite 메타데이터 + lexical scoring으로 시작하고, 필요 시 embedding/vector store로 확장한다.

@@ -1,36 +1,72 @@
 from __future__ import annotations
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.models.outline import Citation, OutlineSection
 
-DEFAULT_OUTLINE_SECTIONS = [
-    {"title": "제안 개요", "needs_search": False},
-    {"title": "수행 전략", "needs_search": True},
-    {"title": "기대 효과", "needs_search": True},
-]
+
+def _clamp_depth(depth: int) -> int:
+    return max(1, min(6, depth))
+
+
+def _normalize_section_snapshots(sections: list[dict]) -> list[dict]:
+    counters = [0, 0, 0, 0, 0, 0]
+    previous_depth = 0
+    normalized_sections: list[dict] = []
+
+    for index, payload in enumerate(sections, start=1):
+        desired_depth = _clamp_depth(int(payload.get("depth") or 1))
+        normalized_depth = 1 if previous_depth == 0 else min(desired_depth, min(6, previous_depth + 1))
+        counters[normalized_depth - 1] += 1
+        for position in range(normalized_depth, len(counters)):
+            counters[position] = 0
+
+        previous_depth = normalized_depth
+        normalized_sections.append(
+            {
+                **payload,
+                "sort_order": index,
+                "depth": normalized_depth,
+                "display_label": ".".join(str(counter) for counter in counters[:normalized_depth]),
+            }
+        )
+
+    return normalized_sections
+
+
+def _normalize_outline_rows(db: Session, sections: list[OutlineSection]) -> list[OutlineSection]:
+    changed = False
+    normalized = _normalize_section_snapshots(
+        [
+            {
+                "sort_order": section.sort_order,
+                "depth": section.depth,
+                "display_label": section.display_label,
+                "title": section.title,
+            }
+            for section in sections
+        ]
+    )
+
+    for section, payload in zip(sections, normalized):
+        if section.sort_order != payload["sort_order"]:
+            section.sort_order = payload["sort_order"]
+            changed = True
+        if section.depth != payload["depth"]:
+            section.depth = payload["depth"]
+            changed = True
+        if section.display_label != payload["display_label"]:
+            section.display_label = payload["display_label"]
+            changed = True
+
+    if changed:
+        db.commit()
+
+    return sections
 
 
 def ensure_project_outline(db: Session, project_id: int) -> list[OutlineSection]:
-    count = db.scalar(
-        select(func.count()).select_from(OutlineSection).where(OutlineSection.project_id == project_id)
-    )
-    if count:
-        return list_outline_sections(db, project_id)
-
-    db.add_all(
-        [
-            OutlineSection(
-                project_id=project_id,
-                title=section["title"],
-                needs_search=section["needs_search"],
-                sort_order=index,
-            )
-            for index, section in enumerate(DEFAULT_OUTLINE_SECTIONS, start=1)
-        ]
-    )
-    db.commit()
     return list_outline_sections(db, project_id)
 
 
@@ -40,7 +76,7 @@ def list_outline_sections(db: Session, project_id: int) -> list[OutlineSection]:
         .where(OutlineSection.project_id == project_id)
         .order_by(OutlineSection.sort_order.asc(), OutlineSection.id.asc())
     )
-    return list(db.scalars(statement).all())
+    return _normalize_outline_rows(db, list(db.scalars(statement).all()))
 
 
 def get_outline_section(db: Session, project_id: int, section_id: int) -> OutlineSection | None:
@@ -54,26 +90,27 @@ def save_outline_sections(db: Session, project_id: int, sections: list[dict]) ->
     existing_sections = {section.id: section for section in list_outline_sections(db, project_id)}
     kept_ids: set[int] = set()
 
-    for index, payload in enumerate(sections, start=1):
+    for payload in _normalize_section_snapshots(sections):
         section_id = payload.get("id")
-        parent_id = payload.get("parent_id")
-        sort_order = payload.get("sort_order") or index
+        sort_order = payload["sort_order"]
+        depth = payload["depth"]
+        display_label = payload["display_label"]
 
         if section_id and section_id in existing_sections:
             section = existing_sections[section_id]
-            section.parent_id = parent_id
             section.sort_order = sort_order
+            section.depth = depth
+            section.display_label = display_label
             section.title = payload["title"]
-            section.needs_search = payload.get("needs_search", False)
             kept_ids.add(section.id)
             continue
 
         section = OutlineSection(
             project_id=project_id,
-            parent_id=parent_id,
             sort_order=sort_order,
+            depth=depth,
+            display_label=display_label,
             title=payload["title"],
-            needs_search=payload.get("needs_search", False),
         )
         db.add(section)
         db.flush()

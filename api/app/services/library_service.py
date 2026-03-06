@@ -38,7 +38,8 @@ def save_upload_file(file: UploadFile) -> tuple[str, str, str]:
     settings = get_settings()
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
 
-    safe_name = sanitize_filename(file.filename or "upload.bin")
+    display_name = Path(file.filename or "upload.bin").name.strip() or "upload.bin"
+    safe_name = sanitize_filename(display_name)
     destination = settings.upload_dir / f"{uuid4().hex}_{safe_name}"
     byte_limit = settings.max_upload_mb * 1024 * 1024
     total_bytes = 0
@@ -61,4 +62,4 @@ def save_upload_file(file: UploadFile) -> tuple[str, str, str]:
         file.file.close()
 
     relative_path = str(destination.relative_to(settings.app_data_dir))
-    return safe_name, file.content_type or "application/octet-stream", relative_path
+    return display_name[:255], file.content_type or "application/octet-stream", relative_path

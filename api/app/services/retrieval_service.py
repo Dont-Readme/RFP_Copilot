@@ -89,8 +89,13 @@ def retrieve_project_chunks(
     project_id: int,
     query: str,
     limit: int = 4,
+    document_kinds: set[str] | None = None,
 ) -> list[RetrievedChunk]:
     candidate_chunks = _collect_project_chunks(db, project_id)
+    if document_kinds:
+        candidate_chunks = [
+            chunk for chunk in candidate_chunks if chunk.document_kind in document_kinds
+        ]
     if not candidate_chunks:
         return []
 

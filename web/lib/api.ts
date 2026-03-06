@@ -3,7 +3,9 @@ import type {
   Citation,
   DraftChatMessage,
   DraftChatTurn,
+  DraftGeneratePayload,
   DraftGenerateResult,
+  DraftPlanResult,
   DraftSection,
   ExportPreview,
   ExportSession,
@@ -128,10 +130,10 @@ export async function saveOutline(
   payload: {
     sections: Array<{
       id?: number | null;
-      parent_id?: number | null;
       sort_order?: number | null;
+      depth: number;
+      display_label: string;
       title: string;
-      needs_search: boolean;
     }>;
   }
 ): Promise<OutlineSection[]> {
@@ -166,9 +168,13 @@ export async function listDraftSections(projectId: number): Promise<DraftSection
   return request<DraftSection[]>(`/api/projects/${projectId}/draft/sections`);
 }
 
+export async function getDraftPlan(projectId: number): Promise<DraftPlanResult> {
+  return request<DraftPlanResult>(`/api/projects/${projectId}/draft/plan`);
+}
+
 export async function generateDraft(
   projectId: number,
-  payload?: { mode: string }
+  payload?: DraftGeneratePayload
 ): Promise<DraftGenerateResult> {
   return request<DraftGenerateResult>(`/api/projects/${projectId}/draft/generate`, {
     method: "POST",
@@ -266,9 +272,16 @@ export async function getRfpExtraction(projectId: number): Promise<RfpExtraction
   return request<RfpExtraction>(`/api/projects/${projectId}/rfp/extraction`);
 }
 
-export async function rerunRfpExtraction(projectId: number): Promise<RfpExtraction> {
+export async function rerunRfpExtraction(
+  projectId: number,
+  payload?: { file_ids?: number[] }
+): Promise<RfpExtraction> {
   return request<RfpExtraction>(`/api/projects/${projectId}/rfp/extract`, {
-    method: "POST"
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload ?? {})
   });
 }
 

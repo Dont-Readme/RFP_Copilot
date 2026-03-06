@@ -17,6 +17,8 @@ class OutlineSection(Base):
         ForeignKey("outline_sections.id"), nullable=True, index=True
     )
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    depth: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    display_label: Mapped[str] = mapped_column(String(100), nullable=False, default="")
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     needs_search: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(

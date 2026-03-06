@@ -1,24 +1,22 @@
 "use client";
 
-import Link from "next/link";
 import { useState } from "react";
 
-import { generateDraft, getCitations, runSearch, saveOutline } from "@/lib/api";
-import type { Citation, OutlineSection } from "@/lib/types";
+import { saveOutline } from "@/lib/api";
+import type { OutlineSection } from "@/lib/types";
 
 type OutlineManagerProps = {
   projectId: number;
   initialSections: OutlineSection[];
-  initialCitations: Citation[];
 };
 
 type OutlineRow = {
   id?: number;
   localId: string;
-  parent_id: number | null;
   sort_order: number;
+  depth: number;
+  display_label: string;
   title: string;
-  needs_search: boolean;
 };
 
 function buildLocalKey(sectionId?: number) {
@@ -29,49 +27,106 @@ function toRows(sections: OutlineSection[]): OutlineRow[] {
   return sections.map((section) => ({
     id: section.id,
     localId: buildLocalKey(section.id),
-    parent_id: section.parent_id,
     sort_order: section.sort_order,
-    title: section.title,
-    needs_search: section.needs_search
+    depth: section.depth,
+    display_label: section.display_label,
+    title: section.title
   }));
 }
 
-export function OutlineManager({
-  projectId,
-  initialSections,
-  initialCitations
-}: OutlineManagerProps) {
-  const [sections, setSections] = useState<OutlineRow[]>(toRows(initialSections));
-  const [citations, setCitations] = useState(initialCitations);
-  const [busyAction, setBusyAction] = useState<"save" | "search" | "generate" | null>(null);
+function clampDepth(depth: number) {
+  return Math.max(1, Math.min(6, depth));
+}
+
+function normalizeRows(rows: OutlineRow[]): OutlineRow[] {
+  const counters = [0, 0, 0, 0, 0, 0];
+  let previousDepth = 0;
+
+  return rows.map((row, index) => {
+    const desiredDepth = clampDepth(row.depth);
+    const normalizedDepth =
+      previousDepth === 0 ? 1 : Math.min(desiredDepth, Math.min(6, previousDepth + 1));
+
+    counters[normalizedDepth - 1] += 1;
+    for (let position = normalizedDepth; position < counters.length; position += 1) {
+      counters[position] = 0;
+    }
+
+    previousDepth = normalizedDepth;
+
+    return {
+      ...row,
+      sort_order: index + 1,
+      depth: normalizedDepth,
+      display_label: counters.slice(0, normalizedDepth).join(".")
+    };
+  });
+}
+
+function renderPreview(row: OutlineRow) {
+  return `${row.display_label} ${row.title}`.trim();
+}
+
+export function OutlineManager({ projectId, initialSections }: OutlineManagerProps) {
+  const [sections, setSections] = useState<OutlineRow[]>(normalizeRows(toRows(initialSections)));
+  const [busyAction, setBusyAction] = useState<"save" | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   function updateRow(localId: string, patch: Partial<OutlineRow>) {
     setSections((current) =>
-      current.map((section) => (section.localId === localId ? { ...section, ...patch } : section))
+      normalizeRows(
+        current.map((section) => (section.localId === localId ? { ...section, ...patch } : section))
+      )
     );
   }
 
   function addSection() {
-    setSections((current) => [
-      ...current,
-      {
+    setSections((current) =>
+      normalizeRows([
+        ...current,
+        {
+          localId: buildLocalKey(),
+          sort_order: current.length + 1,
+          depth: 1,
+          display_label: "",
+          title: `새 목차 ${current.length + 1}`
+        }
+      ])
+    );
+  }
+
+  function suggestInsertedDepth(index: number, current: OutlineRow[]) {
+    const previous = current[index - 1];
+    const next = current[index];
+    if (previous && next && previous.depth === next.depth) {
+      return previous.depth;
+    }
+    if (previous) {
+      return previous.depth;
+    }
+    if (next) {
+      return next.depth;
+    }
+    return 1;
+  }
+
+  function insertSectionAt(index: number) {
+    setSections((current) => {
+      const next = [...current];
+      next.splice(index, 0, {
         localId: buildLocalKey(),
-        parent_id: null,
-        sort_order: current.length + 1,
-        title: `새 섹션 ${current.length + 1}`,
-        needs_search: false
-      }
-    ]);
+        sort_order: index + 1,
+        depth: suggestInsertedDepth(index, current),
+        display_label: "",
+        title: `새 목차 ${current.length + 1}`
+      });
+      return normalizeRows(next);
+    });
   }
 
   function removeSection(localId: string) {
-    setSections((current) =>
-      current
-        .filter((section) => section.localId !== localId)
-        .map((section, index) => ({ ...section, sort_order: index + 1 }))
-    );
+    setSections((current) => normalizeRows(current.filter((section) => section.localId !== localId)));
   }
 
   function moveSection(localId: string, direction: -1 | 1) {
@@ -85,18 +140,25 @@ export function OutlineManager({
       const next = [...current];
       const [target] = next.splice(index, 1);
       next.splice(nextIndex, 0, target);
-      return next.map((section, rowIndex) => ({ ...section, sort_order: rowIndex + 1 }));
+      return normalizeRows(next);
     });
   }
 
-  async function refreshCitations() {
-    const latest = await getCitations(projectId);
-    setCitations(latest);
+  function changeDepth(localId: string, delta: -1 | 1) {
+    setSections((current) =>
+      normalizeRows(
+        current.map((section) =>
+          section.localId === localId
+            ? { ...section, depth: clampDepth(section.depth + delta) }
+            : section
+        )
+      )
+    );
   }
 
   async function handleSave() {
     if (sections.some((section) => !section.title.trim())) {
-      setError("모든 섹션 제목을 입력해 주세요.");
+      setError("모든 목차 제목을 입력해 주세요.");
       return;
     }
 
@@ -107,54 +169,16 @@ export function OutlineManager({
       const saved = await saveOutline(projectId, {
         sections: sections.map((section, index) => ({
           id: section.id,
-          parent_id: section.parent_id,
           sort_order: index + 1,
-          title: section.title.trim(),
-          needs_search: section.needs_search
+          depth: section.depth,
+          display_label: section.display_label.trim(),
+          title: section.title.trim()
         }))
       });
-      setSections(toRows(saved));
-      await refreshCitations();
+      setSections(normalizeRows(toRows(saved)));
       setMessage("목차를 저장했습니다.");
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : "목차 저장에 실패했습니다.");
-    } finally {
-      setBusyAction(null);
-    }
-  }
-
-  async function handleSearch() {
-    const targetIds = sections.filter((section) => section.needs_search && section.id).map((section) => section.id as number);
-    if (targetIds.length === 0) {
-      setError("먼저 `검색 필요`가 켜진 섹션을 하나 이상 저장해 주세요.");
-      return;
-    }
-
-    try {
-      setBusyAction("search");
-      setError(null);
-      setMessage(null);
-      await runSearch(projectId, { section_ids: targetIds });
-      await refreshCitations();
-      setMessage("저장된 RFP/연결 자료를 기준으로 인용을 갱신했습니다.");
-    } catch (searchError) {
-      setError(searchError instanceof Error ? searchError.message : "검색 실행에 실패했습니다.");
-    } finally {
-      setBusyAction(null);
-    }
-  }
-
-  async function handleGenerateDraft() {
-    try {
-      setBusyAction("generate");
-      setError(null);
-      setMessage(null);
-      const result = await generateDraft(projectId, { mode: "full" });
-      setMessage(
-        `목차 기반 초안을 생성했습니다. 질문 ${result.questions.length}건이 갱신되었습니다.`
-      );
-    } catch (generateError) {
-      setError(generateError instanceof Error ? generateError.message : "초안 생성에 실패했습니다.");
     } finally {
       setBusyAction(null);
     }
@@ -165,129 +189,155 @@ export function OutlineManager({
       <section className="content-panel">
         <div className="toolbar">
           <div>
-            <p className="eyebrow">Outline CRUD</p>
-            <h2 className="card-title">목차와 검색 필요 플래그</h2>
+            <p className="eyebrow">Outline Builder</p>
+            <h2 className="card-title">목차 구조 정의</h2>
             <p className="page-copy">
-              현재 검색은 외부 웹이 아니라 저장된 RFP와 프로젝트 연결 자료를 대상으로 실행합니다.
+              이 화면에서는 상위/하위 목차와 제목만 정의합니다. 번호는 depth와 순서에 따라 자동으로
+              계산되며, 초안 생성은 Draft Workspace에서 진행합니다.
             </p>
           </div>
           <div className="status-row">
             <span className="status-pill ok">{sections.length} sections</span>
-            <span className="status-pill warn">
-              {sections.filter((section) => section.needs_search).length} needs_search
-            </span>
+            <span className="status-pill">번호 자동 계산</span>
           </div>
         </div>
 
         <div className="stack-list">
-          {sections.map((section, index) => {
-            const sectionCitations = section.id
-              ? citations.filter((citation) => citation.outline_section_id === section.id)
-              : [];
-
-            return (
-              <article key={section.localId} className="mini-card">
-                <div className="toolbar">
-                  <div style={{ width: "100%" }}>
-                    <div className="status-row" style={{ marginTop: 0 }}>
-                      <span className="code-badge">#{index + 1}</span>
-                      <span className={`status-pill ${section.needs_search ? "warn" : "ok"}`}>
-                        {section.needs_search ? "search" : "manual"}
-                      </span>
-                      <span className="status-pill ok">{sectionCitations.length} citations</span>
-                    </div>
-                    <label className="field" style={{ marginTop: 12 }}>
-                      <span>섹션 제목</span>
-                      <input
-                        value={section.title}
-                        onChange={(event) => updateRow(section.localId, { title: event.target.value })}
-                      />
-                    </label>
-                    <label className="checkbox-row" style={{ marginTop: 14 }}>
-                      <input
-                        checked={section.needs_search}
-                        onChange={(event) =>
-                          updateRow(section.localId, { needs_search: event.target.checked })
-                        }
-                        type="checkbox"
-                      />
-                      <span>
-                        <strong>검색 필요</strong>
-                        <span className="subtle-copy">
-                          {" "}
-                          체크된 섹션만 `search/run` 대상이 됩니다.
-                        </span>
-                      </span>
-                    </label>
+          {sections.length === 0 ? (
+            <div className="outline-empty-state">
+              <p className="card-title">아직 저장된 목차가 없습니다.</p>
+              <p className="card-copy">
+                섹션을 추가한 뒤 깊이와 제목을 입력해 주세요. 번호는 구조에 맞게 자동으로
+                계산됩니다.
+              </p>
+            </div>
+          ) : (
+            <>
+              {sections.map((section, index) => (
+                <div key={section.localId} className="outline-row-wrap">
+                  <div className="outline-insert-slot">
+                    <span className="outline-insert-line" />
+                    <button
+                      className="outline-insert-button"
+                      onClick={() => insertSectionAt(index)}
+                      type="button"
+                    >
+                      +
+                    </button>
+                    <span className="outline-insert-line" />
                   </div>
-                  <div className="action-row">
-                    <button
-                      className="secondary-button"
-                      onClick={() => moveSection(section.localId, -1)}
-                      type="button"
-                    >
-                      위로
-                    </button>
-                    <button
-                      className="secondary-button"
-                      onClick={() => moveSection(section.localId, 1)}
-                      type="button"
-                    >
-                      아래로
-                    </button>
-                    <button
-                      className="secondary-button"
-                      onClick={() => removeSection(section.localId)}
-                      type="button"
-                    >
-                      삭제
-                    </button>
-                  </div>
-                </div>
 
-                {sectionCitations.length > 0 ? (
-                  <div className="stack-list" style={{ marginTop: 16 }}>
-                    {sectionCitations.map((citation) => (
-                      <div key={citation.id} className="preview-box">
-                        <p className="eyebrow">Citation</p>
-                        <h3 className="card-title">{citation.source_title}</h3>
-                        <p className="card-copy">{citation.snippet}</p>
-                        <p className="subtle-copy mono">{citation.source_url}</p>
+                  <article className="mini-card outline-row-card">
+                    <div className="outline-row-header">
+                      <div className="status-row" style={{ marginTop: 0 }}>
+                        <span className="code-badge">#{index + 1}</span>
+                        <span className="status-pill">depth {section.depth}</span>
                       </div>
-                    ))}
-                  </div>
-                ) : null}
-              </article>
-            );
-          })}
+                      <p
+                        className="outline-row-preview"
+                        style={{ paddingLeft: `${(section.depth - 1) * 20}px` }}
+                      >
+                        {renderPreview(section)}
+                      </p>
+                    </div>
+
+                    <div className="outline-grid">
+                      <label className="field">
+                        <span>깊이</span>
+                        <input
+                          max={6}
+                          min={1}
+                          type="number"
+                          value={section.depth}
+                          onChange={(event) =>
+                            updateRow(section.localId, {
+                              depth: clampDepth(Number(event.target.value) || 1)
+                            })
+                          }
+                        />
+                      </label>
+                      <label className="field">
+                        <span>번호</span>
+                        <input readOnly value={section.display_label} />
+                      </label>
+                      <label className="field outline-title-field">
+                        <span>목차 제목</span>
+                        <input
+                          placeholder="예: 사업 수행 전략"
+                          value={section.title}
+                          onChange={(event) => updateRow(section.localId, { title: event.target.value })}
+                        />
+                      </label>
+                    </div>
+
+                    <div className="action-row">
+                      <button
+                        className="secondary-button"
+                        onClick={() => moveSection(section.localId, -1)}
+                        type="button"
+                      >
+                        위로
+                      </button>
+                      <button
+                        className="secondary-button"
+                        onClick={() => moveSection(section.localId, 1)}
+                        type="button"
+                      >
+                        아래로
+                      </button>
+                      <button
+                        className="secondary-button"
+                        onClick={() => changeDepth(section.localId, 1)}
+                        type="button"
+                      >
+                        들여쓰기
+                      </button>
+                      <button
+                        className="secondary-button"
+                        onClick={() => changeDepth(section.localId, -1)}
+                        type="button"
+                      >
+                        내어쓰기
+                      </button>
+                      <button
+                        className="secondary-button"
+                        onClick={() => removeSection(section.localId)}
+                        type="button"
+                      >
+                        삭제
+                      </button>
+                    </div>
+                  </article>
+                </div>
+              ))}
+
+              <div className="outline-insert-slot">
+                <span className="outline-insert-line" />
+                <button
+                  className="outline-insert-button"
+                  onClick={() => insertSectionAt(sections.length)}
+                  type="button"
+                >
+                  +
+                </button>
+                <span className="outline-insert-line" />
+              </div>
+            </>
+          )}
         </div>
 
         <div className="action-row">
           <button className="secondary-button" onClick={addSection} type="button">
             섹션 추가
           </button>
-          <button className="button" disabled={busyAction === "save"} onClick={() => void handleSave()} type="button">
-            {busyAction === "save" ? "저장 중..." : "목차 저장"}
-          </button>
-          <button
-            className="secondary-button"
-            disabled={busyAction === "search"}
-            onClick={() => void handleSearch()}
-            type="button"
-          >
-            {busyAction === "search" ? "검색 중..." : "검색 실행"}
-          </button>
           <button
             className="button"
-            disabled={busyAction === "generate"}
-            onClick={() => void handleGenerateDraft()}
+            disabled={busyAction === "save"}
+            onClick={() => void handleSave()}
             type="button"
           >
-            {busyAction === "generate" ? "생성 중..." : "초안 재생성"}
+            {busyAction === "save" ? "저장 중..." : "목차 저장"}
           </button>
-          <Link className="secondary-button" href={`/projects/${projectId}/draft`}>
-            Draft 열기
-          </Link>
         </div>
         {message ? <p className="page-copy">{message}</p> : null}
         {error ? <p className="error-text">{error}</p> : null}

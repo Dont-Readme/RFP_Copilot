@@ -1,15 +1,16 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 import re
+import time
+from typing import cast
 
 from pydantic import BaseModel, Field
 
 from app.models.rfp import ProjectFile
 from app.services.llm_service import LLMConfigurationError, LLMResponseError, LLMService
 from app.services.rfp_prompts import (
-    EVALUATION_SYSTEM_PROMPT,
-    EVALUATION_USER_PROMPT_TEMPLATE,
     PROJECT_SUMMARY_SYSTEM_PROMPT,
     PROJECT_SUMMARY_USER_PROMPT_TEMPLATE,
     REQUIREMENTS_SYSTEM_PROMPT,
@@ -85,7 +86,10 @@ class FileChunkBundle:
 
 
 class StructuredProjectSummary(BaseModel):
-    project_summary_text: str = ""
+    business_overview: str = ""
+    scope: str = ""
+    budget: str = ""
+    submission_period_and_method: str = ""
 
 
 class StructuredRequirement(BaseModel):
@@ -99,16 +103,6 @@ class StructuredRequirementExtraction(BaseModel):
     requirements: list[StructuredRequirement] = Field(default_factory=list)
 
 
-class StructuredEvaluation(BaseModel):
-    item: str = ""
-    score: str = ""
-    notes: str = ""
-
-
-class StructuredEvaluationExtraction(BaseModel):
-    evaluation_items: list[StructuredEvaluation] = Field(default_factory=list)
-
-
 def _normalize_text(value: str | None) -> str:
     if not value:
         return ""
@@ -118,6 +112,58 @@ def _normalize_text(value: str | None) -> str:
 
 def _normalize_inline(value: str | None) -> str:
     return _normalize_text(value).replace("\n", " ").strip()
+
+
+def _split_markdown_items(value: str | None) -> list[str]:
+    normalized = _normalize_text(value)
+    if not normalized:
+        return []
+
+    items: list[str] = []
+    for raw_line in normalized.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        line = re.sub(r"^[•◦○●■□▪❍\-]+\s*", "", line)
+        fragments = [fragment.strip() for fragment in re.split(r"\s*;\s*", line) if fragment.strip()]
+        if fragments:
+            items.extend(fragments)
+        else:
+            items.append(line)
+    return items
+
+
+def _format_summary_section(value: str | None, *, prefer_bullets: bool = False) -> str:
+    items = _split_markdown_items(value)
+    if not items:
+        return "(없음)"
+    if prefer_bullets or len(items) > 1:
+        return "\n".join(f"- {item}" for item in items)
+    return items[0]
+
+
+def _format_requirement_details(value: str | None) -> str:
+    items = _split_markdown_items(value)
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    return "\n".join(f"- {item}" for item in items)
+
+
+def _build_project_summary_markdown(summary: StructuredProjectSummary) -> str:
+    return "\n\n".join(
+        [
+            "# 사업 개요",
+            _format_summary_section(summary.business_overview),
+            "# 과업 범위",
+            _format_summary_section(summary.scope, prefer_bullets=True),
+            "# 사업비",
+            _format_summary_section(summary.budget),
+            "# 제안서 제출 기간 및 제출 방법",
+            _format_summary_section(summary.submission_period_and_method, prefer_bullets=True),
+        ]
+    ).strip()
 
 
 def _role_rank(role: str, section: str) -> int:
@@ -209,30 +255,11 @@ def _normalize_requirements(items: list[StructuredRequirement]) -> list[dict]:
                 "requirement_no": requirement_no[:100],
                 "name": name[:255],
                 "definition": definition[:2000],
-                "details": details[:6000],
+                "details": _format_requirement_details(details)[:6000],
             }
         )
 
     return normalized[:80]
-
-
-def _normalize_evaluation_items(items: list[StructuredEvaluation]) -> list[dict]:
-    normalized: list[dict] = []
-    seen_titles: set[str] = set()
-
-    for item in items:
-        title = _normalize_inline(item.item)
-        score = _normalize_inline(item.score)
-        notes = _normalize_text(item.notes)
-        if not any((title, score, notes)):
-            continue
-        dedupe_key = (title or notes[:120]).casefold()
-        if dedupe_key in seen_titles:
-            continue
-        seen_titles.add(dedupe_key)
-        normalized.append({"item": title[:255], "score": score[:100], "notes": notes[:4000]})
-
-    return normalized[:40]
 
 
 def _merge_raw_text(bundles: list[FileChunkBundle]) -> str:
@@ -245,6 +272,43 @@ def _merge_raw_text(bundles: list[FileChunkBundle]) -> str:
         parts.append(normalized)
         parts.append("")
     return "\n".join(parts).strip()
+
+
+def _run_section_extraction(
+    *,
+    section_label: str,
+    llm_service: LLMService,
+    system_prompt: str,
+    user_prompt: str,
+    response_format: type[BaseModel],
+    max_completion_tokens: int,
+) -> BaseModel:
+    last_error: Exception | None = None
+    for attempt in range(1, 3):
+        try:
+            return cast(
+                BaseModel,
+                llm_service.parse_chat_completion(
+                    model=llm_service.settings.openai_model_extraction,
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    response_format=response_format,
+                    max_completion_tokens=max_completion_tokens,
+                ),
+            )
+        except (LLMConfigurationError, LLMResponseError) as exc:
+            last_error = exc
+            message = str(exc)
+            if "APITimeoutError" not in message or attempt == 2:
+                if "APITimeoutError" in message:
+                    raise RfpExtractionError(
+                        f"{section_label} 추출 중 시간이 초과되었습니다. 선택 파일 수를 줄이거나 "
+                        "OPENAI_TIMEOUT_SECONDS 값을 늘려 다시 시도해 주세요."
+                    ) from exc
+                raise RfpExtractionError(f"{section_label} 추출 실패: {message}") from exc
+            time.sleep(1.5 * attempt)
+
+    raise RfpExtractionError(f"{section_label} 추출 실패: {last_error}")
 
 
 def extract_rfp_payload(
@@ -264,37 +328,48 @@ def extract_rfp_payload(
 
     summary_context = _select_context("summary", bundles)
     requirement_context = _select_context("requirements", bundles)
-    evaluation_context = _select_context("evaluation", bundles)
-
-    try:
-        summary = llm_service.parse_chat_completion(
-            model=llm_service.settings.openai_model_extraction,
-            system_prompt=PROJECT_SUMMARY_SYSTEM_PROMPT,
-            user_prompt=PROJECT_SUMMARY_USER_PROMPT_TEMPLATE.format(context=summary_context or raw_text[:12000]),
-            response_format=StructuredProjectSummary,
-            max_completion_tokens=900,
-        )
-        requirement_result = llm_service.parse_chat_completion(
-            model=llm_service.settings.openai_model_extraction,
-            system_prompt=REQUIREMENTS_SYSTEM_PROMPT,
-            user_prompt=REQUIREMENTS_USER_PROMPT_TEMPLATE.format(
+    extraction_specs = {
+        "summary": {
+            "section_label": "사업 개요",
+            "system_prompt": PROJECT_SUMMARY_SYSTEM_PROMPT,
+            "user_prompt": PROJECT_SUMMARY_USER_PROMPT_TEMPLATE.format(
+                context=summary_context or raw_text[:12000]
+            ),
+            "response_format": StructuredProjectSummary,
+            "max_completion_tokens": 900,
+        },
+        "requirements": {
+            "section_label": "요구사항",
+            "system_prompt": REQUIREMENTS_SYSTEM_PROMPT,
+            "user_prompt": REQUIREMENTS_USER_PROMPT_TEMPLATE.format(
                 context=requirement_context or raw_text[:12000]
             ),
-            response_format=StructuredRequirementExtraction,
-            max_completion_tokens=2600,
-        )
-        evaluation_result = llm_service.parse_chat_completion(
-            model=llm_service.settings.openai_model_extraction,
-            system_prompt=EVALUATION_SYSTEM_PROMPT,
-            user_prompt=EVALUATION_USER_PROMPT_TEMPLATE.format(
-                context=evaluation_context or raw_text[:9000]
-            ),
-            response_format=StructuredEvaluationExtraction,
-            max_completion_tokens=1800,
-        )
-    except (LLMConfigurationError, LLMResponseError) as exc:
-        raise RfpExtractionError(str(exc)) from exc
+            "response_format": StructuredRequirementExtraction,
+            "max_completion_tokens": 2600,
+        },
+    }
+    extracted_sections: dict[str, BaseModel] = {}
+    with ThreadPoolExecutor(max_workers=len(extraction_specs)) as executor:
+        future_to_section = {
+            executor.submit(
+                _run_section_extraction,
+                section_label=spec["section_label"],
+                llm_service=llm_service,
+                system_prompt=spec["system_prompt"],
+                user_prompt=spec["user_prompt"],
+                response_format=spec["response_format"],
+                max_completion_tokens=spec["max_completion_tokens"],
+            ): section
+            for section, spec in extraction_specs.items()
+        }
+        for future in as_completed(future_to_section):
+            section = future_to_section[future]
+            extracted_sections[section] = future.result()
 
+    summary = cast(StructuredProjectSummary, extracted_sections["summary"])
+    requirement_result = cast(
+        StructuredRequirementExtraction, extracted_sections["requirements"]
+    )
     ocr_required = any(
         bundle.project_file.mime == "application/pdf" and len(bundle.raw_text.strip()) < 80
         for bundle in bundles
@@ -302,7 +377,7 @@ def extract_rfp_payload(
     payload = {
         "status": "draft",
         "raw_text": raw_text,
-        "project_summary_text": _normalize_text(summary.project_summary_text),
+        "project_summary_text": _build_project_summary_markdown(summary),
         "ocr_required": ocr_required,
         "eligibility_text": "",
         "submission_docs_text": "",
@@ -316,5 +391,5 @@ def extract_rfp_payload(
     return (
         payload,
         _normalize_requirements(requirement_result.requirements),
-        _normalize_evaluation_items(evaluation_result.evaluation_items),
+        [],
     )

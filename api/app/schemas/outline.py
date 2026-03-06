@@ -7,14 +7,14 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class OutlineSectionWrite(BaseModel):
     id: int | None = None
-    parent_id: int | None = None
     sort_order: int | None = Field(default=None, ge=1)
+    depth: int = Field(default=1, ge=1, le=6)
+    display_label: str = Field(default="", max_length=100)
     title: str = Field(min_length=1, max_length=255)
-    needs_search: bool = False
 
 
 class OutlineSaveRequest(BaseModel):
-    sections: list[OutlineSectionWrite] = Field(min_length=1)
+    sections: list[OutlineSectionWrite] = Field(default_factory=list)
 
 
 class OutlineSectionRead(BaseModel):
@@ -22,10 +22,10 @@ class OutlineSectionRead(BaseModel):
 
     id: int
     project_id: int
-    parent_id: int | None
     sort_order: int
+    depth: int
+    display_label: str
     title: str
-    needs_search: bool
     created_at: datetime
     updated_at: datetime
 

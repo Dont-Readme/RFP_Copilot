@@ -1,22 +1,19 @@
 from __future__ import annotations
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from app.models.draft import DraftSection, OpenQuestion
+from app.models.draft import DraftChatMessage, DraftSection, OpenQuestion
 from app.models.project import Project
 
 
 def _build_default_content(project_name: str) -> str:
     return (
         f"# {project_name}\n\n"
-        "## 제안 개요\n"
-        "본 프로젝트의 제안 방향과 목표를 정리합니다.\n\n"
-        "[확인 필요(시스템)] 실적 수치와 최신 레퍼런스를 입력해 주세요.\n\n"
-        "## 수행 전략\n"
-        "- 평가항목과 직접 대응하는 수행 방안을 정리합니다.\n"
-        "- 보유 인력과 일정 계획의 근거를 연결합니다.\n\n"
-        "[확인 필요(시스템)] 평가항목 2에 대응하는 KPI 문장을 보강해 주세요.\n"
+        "초안이 아직 생성되지 않았습니다.\n\n"
+        "1. RFP 추출 결과를 확인합니다.\n"
+        "2. 목차를 정의합니다.\n"
+        "3. Draft Workspace에서 초안 생성을 실행합니다.\n"
     )
 
 
@@ -27,30 +24,11 @@ def ensure_project_workspace(db: Session, project: Project) -> None:
     if not existing_draft_count:
         section = DraftSection(
             project_id=project.id,
-            title="기본 초안",
+            title="초안 준비 상태",
             content_md=_build_default_content(project.name),
-            status="generated",
+            status="ready",
         )
         db.add(section)
-        db.flush()
-        db.add_all(
-            [
-                OpenQuestion(
-                    id=f"oq_{project.id}_001",
-                    project_id=project.id,
-                    draft_section_id=section.id,
-                    question_text="실적 수치와 최신 레퍼런스를 확인해 주세요.",
-                    status="open",
-                ),
-                OpenQuestion(
-                    id=f"oq_{project.id}_002",
-                    project_id=project.id,
-                    draft_section_id=section.id,
-                    question_text="평가항목 2와 직접 대응하는 KPI 문장을 보강할지 결정해 주세요.",
-                    status="open",
-                ),
-            ]
-        )
         db.commit()
 
 
@@ -122,6 +100,7 @@ def replace_project_workspace(
         section.status = "generated"
         db.flush()
 
+    db.execute(delete(DraftChatMessage).where(DraftChatMessage.project_id == project.id))
     db.query(OpenQuestion).filter(OpenQuestion.project_id == project.id).delete()
     created_questions: list[OpenQuestion] = []
     for index, question_text in enumerate(questions, start=1):

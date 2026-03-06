@@ -1,7 +1,14 @@
 import { notFound } from "next/navigation";
 
-import { listDraftChatMessages, listDraftSections, listQuestions } from "@/lib/api";
-import type { DraftChatMessage, DraftSection, OpenQuestion } from "@/lib/types";
+import {
+  getOutline,
+  getRfpExtraction,
+  listDraftChatMessages,
+  listDraftSections,
+  listProjectAssets,
+  listQuestions
+} from "@/lib/api";
+import type { DraftChatMessage, DraftSection, OpenQuestion, OutlineSection } from "@/lib/types";
 import { DraftWorkspace } from "@/components/DraftWorkspace";
 
 type ProjectDraftPageProps = {
@@ -10,10 +17,20 @@ type ProjectDraftPageProps = {
 
 async function loadDraftWorkspace(projectId: number): Promise<{
   chatMessages: DraftChatMessage[];
+  linkedAssetCount: number;
+  outlineSections: OutlineSection[];
+  rfpFileCount: number;
+  rfpReady: boolean;
   section: DraftSection;
   questions: OpenQuestion[];
 }> {
-  const [sections, questions] = await Promise.all([listDraftSections(projectId), listQuestions(projectId)]);
+  const [sections, questions, outlineSections, extraction, linkedAssets] = await Promise.all([
+    listDraftSections(projectId),
+    listQuestions(projectId),
+    getOutline(projectId),
+    getRfpExtraction(projectId),
+    listProjectAssets(projectId)
+  ]);
   const [section] = sections;
 
   if (!section) {
@@ -21,7 +38,15 @@ async function loadDraftWorkspace(projectId: number): Promise<{
   }
 
   const chatMessages = await listDraftChatMessages(projectId, section.id);
-  return { chatMessages, section, questions };
+  return {
+    chatMessages,
+    linkedAssetCount: linkedAssets.length,
+    outlineSections,
+    rfpFileCount: extraction.files.length,
+    rfpReady: Boolean(extraction.raw_text.trim()),
+    section,
+    questions
+  };
 }
 
 export default async function ProjectDraftPage({ params }: ProjectDraftPageProps) {
@@ -31,7 +56,8 @@ export default async function ProjectDraftPage({ params }: ProjectDraftPageProps
     notFound();
   }
 
-  const { chatMessages, section, questions } = await loadDraftWorkspace(projectId);
+  const { chatMessages, linkedAssetCount, outlineSections, rfpFileCount, rfpReady, section, questions } =
+    await loadDraftWorkspace(projectId);
 
   return (
     <main className="page-shell">
@@ -39,13 +65,17 @@ export default async function ProjectDraftPage({ params }: ProjectDraftPageProps
         <p className="eyebrow">Draft Editor</p>
         <h1 className="card-title">Project #{projectId} Draft Workspace</h1>
         <p className="page-copy">
-          목차 기반으로 생성된 초안을 편집하고, 시스템 표기와 질문 패널, 부분 수정 요청을
-          함께 다룹니다.
+          RFP 추출 결과, 연결 자료, 저장된 목차를 확인한 뒤 초안을 생성하고 같은 화면에서
+          편집합니다.
         </p>
       </section>
 
       <DraftWorkspace
         initialChatMessages={chatMessages}
+        initialLinkedAssetCount={linkedAssetCount}
+        initialOutlineSections={outlineSections}
+        initialRfpFileCount={rfpFileCount}
+        initialRfpReady={rfpReady}
         initialQuestions={questions}
         initialSection={section}
         projectId={projectId}

@@ -16,6 +16,7 @@ export function OpenQuestionPanel({
       <div className="question-list">
         <p className="eyebrow">Open Questions</p>
         <h2 className="card-title">질문 패널</h2>
+        {questions.length === 0 ? <p className="card-copy">현재 열린 질문이 없습니다.</p> : null}
         {questions.map((question) => (
           <div key={question.id} className="question-item">
             <div className="status-row" style={{ marginTop: 0 }}>

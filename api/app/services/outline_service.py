@@ -9,10 +9,10 @@ def build_outline_from_sections(sections: list[OutlineSection]) -> list[dict]:
     return [
         {
             "id": section.id,
-            "parent_id": section.parent_id,
             "sort_order": section.sort_order,
+            "depth": section.depth,
+            "display_label": section.display_label,
             "title": section.title,
-            "needs_search": section.needs_search,
         }
         for section in sections
     ]

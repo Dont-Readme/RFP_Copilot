@@ -70,6 +70,19 @@ def ensure_runtime_schema_compatibility() -> None:
                 column_name="score_text",
                 ddl="ALTER TABLE evaluation_items ADD COLUMN score_text VARCHAR(100) NOT NULL DEFAULT ''",
             )
+        if "outline_sections" in existing_tables:
+            _ensure_column(
+                connection,
+                table_name="outline_sections",
+                column_name="depth",
+                ddl="ALTER TABLE outline_sections ADD COLUMN depth INTEGER NOT NULL DEFAULT 1",
+            )
+            _ensure_column(
+                connection,
+                table_name="outline_sections",
+                column_name="display_label",
+                ddl="ALTER TABLE outline_sections ADD COLUMN display_label VARCHAR(100) NOT NULL DEFAULT ''",
+            )
 
 
 def initialize_app() -> None:

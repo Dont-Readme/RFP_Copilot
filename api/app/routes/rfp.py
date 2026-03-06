@@ -25,6 +25,7 @@ from app.schemas.rfp import (
     ProjectFileRead,
     RfpEvaluationItemRead,
     RfpExtractionRead,
+    RfpExtractionRunRequest,
     RfpExtractionUpdate,
     RfpFileRole,
     RfpFileUploadResponse,
@@ -38,16 +39,6 @@ from app.services.rfp_service import FileChunkBundle, RfpExtractionError, extrac
 router = APIRouter(tags=["rfp"])
 
 RFP_FILE_ROLES: tuple[RfpFileRole, ...] = ("notice", "sow", "rfp", "requirements", "other")
-
-
-def _parse_weight(score_text: str) -> float | None:
-    match = re.search(r"\d+(?:\.\d+)?", score_text)
-    if not match:
-        return None
-    try:
-        return float(match.group(0))
-    except ValueError:
-        return None
 
 
 def _format_score_text(item) -> str:
@@ -99,8 +90,36 @@ def _build_rfp_response(db: Session, project_id: int) -> RfpExtractionRead:
 
 
 def _build_extraction_bundles(db: Session, project_id: int) -> list[FileChunkBundle]:
+    return _build_extraction_bundles_for_files(db, project_id, None)
+
+
+def _build_extraction_bundles_for_files(
+    db: Session,
+    project_id: int,
+    selected_file_ids: list[int] | None,
+) -> list[FileChunkBundle]:
+    project_files = list_project_files(db, project_id)
+    if selected_file_ids:
+        selected_lookup = {project_file.id: project_file for project_file in project_files}
+        normalized_ids: list[int] = []
+        seen_ids: set[int] = set()
+        for file_id in selected_file_ids:
+            if file_id in seen_ids:
+                continue
+            normalized_ids.append(file_id)
+            seen_ids.add(file_id)
+
+        missing_ids = [file_id for file_id in normalized_ids if file_id not in selected_lookup]
+        if missing_ids:
+            missing_label = ", ".join(str(file_id) for file_id in missing_ids)
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Selected RFP files not found: {missing_label}",
+            )
+        project_files = [selected_lookup[file_id] for file_id in normalized_ids]
+
     bundles: list[FileChunkBundle] = []
-    for project_file in list_project_files(db, project_id):
+    for project_file in project_files:
         chunking_result = ensure_project_file_chunks(db, project_file)
         bundles.append(
             FileChunkBundle(
@@ -117,13 +136,14 @@ def _extract_and_store_rfp(
     *,
     project_id: int,
     llm_service: LLMService,
+    file_ids: list[int] | None = None,
 ) -> RfpExtractionRead:
-    bundles = _build_extraction_bundles(db, project_id)
+    bundles = _build_extraction_bundles_for_files(db, project_id, file_ids)
     if not bundles:
         raise HTTPException(status_code=404, detail="No RFP files have been uploaded yet")
 
     try:
-        payload, requirements, evaluation_items = extract_rfp_payload(
+        payload, requirements, _ = extract_rfp_payload(
             bundles=bundles,
             llm_service=llm_service,
         )
@@ -138,16 +158,7 @@ def _extract_and_store_rfp(
     replace_evaluation_items(
         db,
         project_id,
-        [
-            {
-                "code": f"EV-{index:02d}",
-                "title": item.get("item", "").strip() or f"평가항목 {index}",
-                "score_text": item.get("score", "").strip(),
-                "description": item.get("notes", "").strip(),
-                "weight": _parse_weight(item.get("score", "")),
-            }
-            for index, item in enumerate(evaluation_items, start=1)
-        ],
+        [],
     )
     return _build_rfp_response(db, project_id)
 
@@ -261,13 +272,19 @@ async def read_rfp_extraction(
 @router.post("/projects/{project_id}/rfp/extract", response_model=RfpExtractionRead)
 async def rerun_rfp_extraction(
     project_id: int,
+    payload: RfpExtractionRunRequest | None = None,
     db: Session = Depends(get_db),
     llm_service: LLMService = Depends(get_llm_service),
 ) -> RfpExtractionRead:
     project = get_project(db, project_id)
     if project is None:
         raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
-    return _extract_and_store_rfp(db, project_id=project_id, llm_service=llm_service)
+    return _extract_and_store_rfp(
+        db,
+        project_id=project_id,
+        llm_service=llm_service,
+        file_ids=payload.file_ids if payload is not None else None,
+    )
 
 
 @router.patch("/projects/{project_id}/rfp/extraction", response_model=RfpExtractionRead)
@@ -298,16 +315,7 @@ async def update_rfp_extraction_endpoint(
     replace_evaluation_items(
         db,
         project_id,
-        [
-            {
-                "code": f"EV-{index:02d}",
-                "title": item.item.strip() or f"평가항목 {index}",
-                "score_text": item.score.strip(),
-                "description": item.notes.strip(),
-                "weight": _parse_weight(item.score),
-            }
-            for index, item in enumerate(payload.evaluation_items, start=1)
-        ],
+        [],
     )
     return _build_rfp_response(db, project_id)
 

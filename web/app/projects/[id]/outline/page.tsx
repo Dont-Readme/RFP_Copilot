@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 
-import { getCitations, getOutline } from "@/lib/api";
+import { getOutline } from "@/lib/api";
 import { OutlineManager } from "@/components/OutlineManager";
 
 type ProjectOutlinePageProps = {
@@ -14,10 +14,7 @@ export default async function ProjectOutlinePage({ params }: ProjectOutlinePageP
     notFound();
   }
 
-  const [outlineSections, citations] = await Promise.all([
-    getOutline(projectId),
-    getCitations(projectId)
-  ]);
+  const outlineSections = await getOutline(projectId);
 
   return (
     <main className="page-shell">
@@ -25,15 +22,11 @@ export default async function ProjectOutlinePage({ params }: ProjectOutlinePageP
         <p className="eyebrow">Outline</p>
         <h1 className="card-title">Project #{projectId} Outline Workspace</h1>
         <p className="page-copy">
-          목차 CRUD, `needs_search` 플래그 저장, 인용 검색 실행, 목차 기반 초안 재생성을
-          한 화면에서 처리합니다.
+          사용자가 제안서 목차 구조를 직접 정의하는 화면입니다. 상위/하위 관계와 depth를 정하면
+          번호는 자동으로 계산되며, 초안 생성은 Draft Workspace에서 진행합니다.
         </p>
       </section>
-      <OutlineManager
-        initialCitations={citations}
-        initialSections={outlineSections}
-        projectId={projectId}
-      />
+      <OutlineManager initialSections={outlineSections} projectId={projectId} />
     </main>
   );
 }

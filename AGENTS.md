@@ -31,7 +31,7 @@
 
 ## 5. Current Priorities
 1. Evidence visibility and manual source adjustment for RFP extraction chunks
-2. Section-level source pinning before draft generation
+2. Draft preparation controls: search-target selection after section-level source pinning
 3. Mapping/export polish after the core writing loop works
 
 ## 6. Documentation Triggers

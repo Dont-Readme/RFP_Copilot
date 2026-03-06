@@ -7,6 +7,7 @@ from app.db.session import get_db
 from app.repositories.outline_repo import (
     ensure_project_outline,
     get_outline_section,
+    list_outline_sections,
     list_citations,
     replace_citations_for_sections,
     save_outline_sections,
@@ -41,7 +42,6 @@ async def save_outline(
     project = get_project(db, project_id)
     if project is None:
         raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
-    ensure_project_outline(db, project_id)
     return save_outline_sections(
         db,
         project_id,
@@ -58,7 +58,6 @@ async def read_citations(
     project = get_project(db, project_id)
     if project is None:
         raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
-    ensure_project_outline(db, project_id)
     section_ids = [section_id] if section_id is not None else None
     return list_citations(db, project_id, section_ids=section_ids)
 
@@ -73,7 +72,7 @@ async def run_search(
     if project is None:
         raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
 
-    sections = ensure_project_outline(db, project_id)
+    sections = list_outline_sections(db, project_id)
     if payload.section_ids:
         target_sections = []
         for section_id in payload.section_ids:
@@ -82,7 +81,7 @@ async def run_search(
                 raise HTTPException(status_code=404, detail=f"Outline section {section_id} not found")
             target_sections.append(section)
     else:
-        target_sections = [section for section in sections if section.needs_search]
+        target_sections = sections
 
     if not target_sections:
         raise HTTPException(status_code=400, detail="No outline sections selected for search")

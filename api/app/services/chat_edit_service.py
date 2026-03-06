@@ -42,20 +42,14 @@ def _rfp_summary(
 ) -> str:
     lines = []
     if extraction.project_summary_text:
-        lines.append(f"- 사업 개요: {extraction.project_summary_text}")
+        lines.append("- 구조화된 사업 개요:")
+        lines.append(extraction.project_summary_text)
     if requirements:
         lines.append("- 주요 요구사항:")
         for requirement in requirements[:6]:
             title = requirement.name or requirement.requirement_no or "무제 요구사항"
             detail = requirement.definition or requirement.details
             lines.append(f"  - {title}: {detail[:160] if detail else '세부 내용 확인 필요'}")
-    if evaluation_items:
-        lines.append("- 주요 평가항목:")
-        for item in evaluation_items[:5]:
-            score = item.score_text or (f"{item.weight:g}" if item.weight is not None else "")
-            suffix = f" ({score})" if score else ""
-            note = item.description[:140] if item.description else ""
-            lines.append(f"  - {item.title}{suffix}: {note or '비고 없음'}")
     return "\n".join(lines) if lines else "구조화된 RFP 요약 없음"
 
 

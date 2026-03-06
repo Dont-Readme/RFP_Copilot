@@ -11,8 +11,8 @@ type ProjectHomePageProps = {
 
 const sections = [
   { href: "rfp", title: "RFP Extraction", description: "공고 업로드와 요구사항 확정 흐름" },
-  { href: "outline", title: "Outline", description: "목차 CRUD, 검색 필요 플래그, citation 저장" },
-  { href: "draft", title: "Draft Editor", description: "목차 기반 초안 편집기와 질문 패널" },
+  { href: "outline", title: "Outline", description: "목차 구조와 계층 정의" },
+  { href: "draft", title: "Draft Editor", description: "생성 준비 확인, 초안 생성, AI 편집" },
   { href: "mapping", title: "Mapping", description: "평가항목 매핑 검증 매트릭스" },
   { href: "export", title: "Export", description: "미리보기 후 수정/다운로드 분기" }
 ];
