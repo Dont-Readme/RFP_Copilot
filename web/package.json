@@ -1,0 +1,24 @@
+{
+  "name": "rfp-copilot-web",
+  "private": true,
+  "version": "0.1.0",
+  "engines": {
+    "node": ">=22.22.0"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "next": "^16.1.6",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4"
+  },
+  "devDependencies": {
+    "@types/node": ">=24 <25",
+    "@types/react": ">=19 <20",
+    "typescript": ">=5.9 <6"
+  }
+}
