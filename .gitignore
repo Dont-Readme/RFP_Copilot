@@ -1,4 +1,5 @@
 # Python
+.venv/
 venv/
 __pycache__/
 *.pyc
@@ -22,3 +23,7 @@ out/
 .vscode/
 .idea/
 .DS_Store
+
+# Database
+data/*.db
+*.db
