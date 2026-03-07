@@ -4,7 +4,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "RFP Copilot",
-  description: "Bootstrap monorepo for proposal drafting, mapping, and export workflows."
+  description: "Bootstrap monorepo for proposal drafting and in-editor download workflows."
 };
 
 type RootLayoutProps = {

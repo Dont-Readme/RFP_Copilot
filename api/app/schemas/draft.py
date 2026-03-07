@@ -27,7 +27,12 @@ class OpenQuestionRead(BaseModel):
     id: str
     project_id: int
     draft_section_id: int | None
+    outline_section_id: int | None
+    section_heading_text: str
     question_text: str
+    category: str
+    severity: str
+    source_agent: str
     status: Literal["open", "resolved"]
     created_at: datetime
 
@@ -75,6 +80,7 @@ class DraftChatRequest(BaseModel):
 class DraftChatResponse(BaseModel):
     user_message: DraftChatMessageRead
     assistant_message: DraftChatMessageRead
+    review_items: list[OpenQuestionRead] = Field(default_factory=list)
 
 
 class DraftChatApplyResponse(BaseModel):
@@ -82,38 +88,17 @@ class DraftChatApplyResponse(BaseModel):
     message: DraftChatMessageRead
 
 
-class DraftPlanSourceRead(BaseModel):
-    chunk_id: int
-    document_kind: Literal["rfp", "library"]
-    document_id: int
-    title: str
-    route_label: str | None = None
-    page_start: int | None = None
-    page_end: int | None = None
-    score: int
-    label: str
-    snippet: str
-    selected: bool = True
-
-
-class DraftPlanRequirementRead(BaseModel):
-    id: int
-    requirement_no: str
-    name: str
-    definition: str
-    details: str
-    selected: bool = True
-
-
 class DraftSectionPlanRead(BaseModel):
     section_id: int
     heading_text: str
     depth: int
     heading_path: list[str]
-    query_text: str
-    matched_requirements: list[DraftPlanRequirementRead]
-    rfp_sources: list[DraftPlanSourceRead]
-    library_sources: list[DraftPlanSourceRead]
+    section_goal: str = ""
+    assigned_requirement_titles: list[str] = Field(default_factory=list)
+    assigned_evaluation_titles: list[str] = Field(default_factory=list)
+    assigned_company_facts: list[str] = Field(default_factory=list)
+    search_topics: list[str] = Field(default_factory=list)
+    status: str = "planned"
 
 
 class DraftPlanResponse(BaseModel):
@@ -123,15 +108,8 @@ class DraftPlanResponse(BaseModel):
     sections: list[DraftSectionPlanRead]
 
 
-class DraftGenerateSectionOverride(BaseModel):
-    section_id: int
-    requirement_ids: list[int] = Field(default_factory=list)
-    chunk_ids: list[int] = Field(default_factory=list)
-
-
 class DraftGenerateRequest(BaseModel):
     mode: str = Field(default="full")
-    section_overrides: list[DraftGenerateSectionOverride] = Field(default_factory=list)
 
 
 class DraftGenerateResponse(BaseModel):

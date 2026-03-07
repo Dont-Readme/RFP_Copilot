@@ -21,7 +21,6 @@ from app.routes.draft import router as draft_router
 from app.routes.export import router as export_router
 from app.routes.health import router as health_router
 from app.routes.library import router as library_router
-from app.routes.mapping import router as mapping_router
 from app.routes.outline import router as outline_router
 from app.routes.projects import router as projects_router
 from app.routes.rfp import router as rfp_router
@@ -82,6 +81,43 @@ def ensure_runtime_schema_compatibility() -> None:
                 table_name="outline_sections",
                 column_name="display_label",
                 ddl="ALTER TABLE outline_sections ADD COLUMN display_label VARCHAR(100) NOT NULL DEFAULT ''",
+            )
+            _ensure_column(
+                connection,
+                table_name="outline_sections",
+                column_name="needs_search",
+                ddl="ALTER TABLE outline_sections ADD COLUMN needs_search BOOLEAN NOT NULL DEFAULT 0",
+            )
+        if "open_questions" in existing_tables:
+            _ensure_column(
+                connection,
+                table_name="open_questions",
+                column_name="section_heading_text",
+                ddl="ALTER TABLE open_questions ADD COLUMN section_heading_text VARCHAR(255) NOT NULL DEFAULT ''",
+            )
+            _ensure_column(
+                connection,
+                table_name="open_questions",
+                column_name="outline_section_id",
+                ddl="ALTER TABLE open_questions ADD COLUMN outline_section_id INTEGER",
+            )
+            _ensure_column(
+                connection,
+                table_name="open_questions",
+                column_name="category",
+                ddl="ALTER TABLE open_questions ADD COLUMN category VARCHAR(50) NOT NULL DEFAULT 'missing_evidence'",
+            )
+            _ensure_column(
+                connection,
+                table_name="open_questions",
+                column_name="severity",
+                ddl="ALTER TABLE open_questions ADD COLUMN severity VARCHAR(20) NOT NULL DEFAULT 'medium'",
+            )
+            _ensure_column(
+                connection,
+                table_name="open_questions",
+                column_name="source_agent",
+                ddl="ALTER TABLE open_questions ADD COLUMN source_agent VARCHAR(20) NOT NULL DEFAULT 'reviewer'",
             )
 
 
@@ -159,5 +195,4 @@ app.include_router(library_router, prefix="/api")
 app.include_router(draft_router, prefix="/api")
 app.include_router(rfp_router, prefix="/api")
 app.include_router(outline_router, prefix="/api")
-app.include_router(mapping_router, prefix="/api")
 app.include_router(export_router, prefix="/api")

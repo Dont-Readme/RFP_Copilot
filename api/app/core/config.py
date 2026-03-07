@@ -50,7 +50,7 @@ class Settings:
     openai_timeout_seconds: float
     openai_model_extraction: str
     openai_model_draft: str
-    openai_model_mapping: str
+    openai_model_research: str
     ocr_enabled: bool
 
 
@@ -70,6 +70,6 @@ def get_settings() -> Settings:
         openai_timeout_seconds=float(os.getenv("OPENAI_TIMEOUT_SECONDS", "120")),
         openai_model_extraction=os.getenv("OPENAI_MODEL_EXTRACTION", "gpt-4.1-mini"),
         openai_model_draft=os.getenv("OPENAI_MODEL_DRAFT", "gpt-4.1-mini"),
-        openai_model_mapping=os.getenv("OPENAI_MODEL_MAPPING", "gpt-5-mini"),
+        openai_model_research=os.getenv("OPENAI_MODEL_RESEARCH", "gpt-5-mini"),
         ocr_enabled=_read_bool("OCR_ENABLED", False),
     )

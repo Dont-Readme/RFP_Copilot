@@ -18,8 +18,8 @@
 5) 공고/RFP 추출은 규칙기반보다 OpenAI API 기반 정확도를 우선한다.
 6) 업로드한 회사 자료는 retrieval context로 사용하며, 초기 구현은 경량 RAG로 시작한다.
 7) 핵심 UX는 "초안 생성 1회"보다 "초안 생성 후 AI와 대화하며 반복 수정"에 둔다.
-8) Export는 미리보기 화면을 기본으로 두고, 거기서 수정/다운로드로 분기한다.
-9) 평가항목 매핑은 차별점이지만, 현재는 핵심 작성 루프가 먼저다.
+8) 다운로드는 별도 export 페이지가 아니라 draft 편집기 안에서 바로 수행한다.
+9) 평가항목 추출 데이터는 유지하되, 별도 매핑 기능/페이지는 현재 범위에서 제거한다.
 10) OpenAI API 키는 `api/.env`의 `OPENAI_API_KEY`로만 받는다.
 11) outline은 구조 정의 전용으로 두고, 계층은 `depth/title`로 입력받으며 `display_label`은 자동 번호로 저장한다.
 12) RFP 원문 전체 PDF를 통째로 모델에 넣지 않고, 로컬 chunk 저장 후 관련 chunk만 추출/생성 프롬프트에 넣는다.
@@ -28,19 +28,19 @@
 15) 공고 파일은 업로드 시 자동 추출하지 않고, 사용자가 업로드된 파일 중 필요한 파일을 체크해 추출을 눌렀을 때만 OpenAI 호출을 수행한다.
 16) RFP 추출 프롬프트는 섹션별로 분리하고, 수정 위치는 `api/app/services/rfp_prompts.py`로 고정한다.
 17) 초안 생성 제어는 outline이 아니라 draft preparation 영역에서 수행한다.
-18) 검색 대상 섹션 선택과 source pinning은 outline이 아니라 draft generation 단계에서 다룬다.
-19) 초안 생성은 whole-document 1회 호출이 아니라 `draft plan -> section별 source pinning -> section별 LLM generation`으로 수행한다.
+18) 검색 출처 표기는 검색 기능에서만 다루고, 현재 draft generation 화면에는 노출하지 않는다.
+19) 초안 생성은 planner(A) -> writer(B) -> researcher(C) -> reviewer(D) 순서의 섹션 파이프라인으로 수행하고, 최신 검색은 OpenAI `Responses API + web_search`에 절대 날짜를 명시하는 방식으로 수행한다.
+20) `[확인 필요(시스템)]`는 draft 본문에 직접 쓰지 않고, `작성 확인 사항` 패널에 목차 라벨과 함께 별도 저장/표시한다.
 
 ## 4. 현재 상태 요약
-- 상태: `.env` 기반 OpenAI 설정 로딩, 멀티파일 RFP 대기 목록 업로드/role 지정, 체크한 파일만 section별 prompt로 `사업 개요 템플릿 / 요구사항` 추출, outline 구조 저장(depth/title + 자동 번호), draft preparation에서 section별 추천 요구사항/근거 확인 및 include/exclude 후 section별 AI 초안 생성, draft chat/apply 편집 루프까지 연결됨. 초기 MVP는 완료
-- 우선순위: 1) RFP 추출 근거/evidence 가시화 2) draft preparation의 검색 대상 선택 추가 3) 매핑/서식 고도화
+- 상태: `.env` 기반 OpenAI 설정 로딩, 멀티파일 RFP 대기 목록 업로드/role 지정, 체크한 파일만 section별 prompt로 `사업 개요 템플릿 / 요구사항` 추출, outline 구조 저장(depth/title + 자동 번호), draft generation은 planner/writer/researcher/reviewer 섹션 파이프라인으로 수행됨. 최신 검색은 OpenAI `Responses API + web_search`에 절대 날짜를 명시하는 방식으로 수행되고, 검토 결과는 `작성 확인 사항` 패널에 목차와 함께 표시한다. draft chat/apply 편집 루프와 draft 내 다운로드까지 연결됨.
+- 우선순위: 1) planner/researcher 결과 가시화 2) draft workspace의 생성/편집 UX 안정화 3) export 서식 고도화
 
 ## 5. 다음 작업(Next Actions)
-1) draft workspace에서 근거 삭제(너무 오래 걸리고 버벅거림. 또는 아주 간소화 하기)
-2) draft workspace 전체적으로 기능 다시 확인
-3) RFP 추출 결과별로 사용된 chunk 근거를 보여주고, 파일/근거를 수동 포함·제외할 수 있게 한다
-4) Draft preparation에서 검색 대상 섹션 선택과 외부 검색 연결 방식을 추가한다
-5) 평가항목 매핑과 export 서식 고도화를 재개한다
+1) section plan, search task, search result를 draft 화면에 얼마나 노출할지 결정
+2) researcher(C)의 외부 검색 품질과 provider 범위를 다듬기
+3) AI 편집(chat)도 section plan/search context를 더 활용할지 검토
+4) export 서식 고도화와 최종 산출물 템플릿 정리를 진행한다
 
 ## 6. 중요한 제약/주의사항
 - 공고 PDF는 텍스트/스캔 혼재: OCR은 옵션이며 기본은 텍스트 추출 우선

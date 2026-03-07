@@ -6,7 +6,7 @@
 - OpenAI 기반 추출/생성/대화 편집 루프를 빠르게 검증
 - 업로드 문서를 retrieval context로 재사용
 - "확인 필요(시스템)" 표기의 명확한 UI 구분
-- Export 미리보기 → 수정/다운로드 UX
+- draft 편집 직후 즉시 다운로드 UX
 
 ### Non-goals
 - HWP 완전 자동 편집/서식 완벽 지원
@@ -20,7 +20,7 @@
 
 ## 3. 컴포넌트 책임 분리(역할)
 - routes: HTTP 처리, validation, status code
-- services: pdf/rfp/library/outline/draft/mapping/search/export/rewrite
+- services: pdf/rfp/library/outline/draft/search/export/rewrite
 - repositories: DB CRUD 캡슐화
 - storage_provider: 로컬 저장 구현과 추후 확장 포인트
 
@@ -29,11 +29,10 @@
 2. 사용자가 업로드 완료 파일 중 추출 대상만 체크 → 공고 파일 role과 routed chunk를 사용한 `사업 개요 템플릿 / 요구사항` section별 OpenAI structured extraction → 사용자 검토/확정
 3. 사용자가 `Outline`에서 `depth/title`를 조정하면 `display_label`은 자동 번호로 계산되어 저장
 4. `Draft`에서 추출 상태 + 연결 자료 + 저장된 목차를 확인한 뒤 초안 생성 실행
-5. `draft/plan`에서 목차별 관련 요구사항과 RFP/회사 자료 chunk를 추천하고 사용자가 포함·제외를 조정
-6. 업로드 문서 chunk retrieval → 섹션별 컨텍스트 조합
-7. 추출된 RFP + 선택된 retrieved chunk를 사용한 section별 OpenAI 초안 생성 → OpenQuestion/시스템 표기 삽입
-8. 편집기에서 선택 구간 기준 AI chat/apply 수정 → 적용/취소
-9. Export → 미리보기 → 다운로드
+5. `draft/plan`에서 readiness와 목차 메타데이터를 확인
+6. planner(A)가 요구사항/평가항목/회사 정보/목차를 바탕으로 section plan을 생성
+7. writer(B)가 section별 초안을 쓰고, 최신 정보가 필요한 경우 researcher(C)가 OpenAI `Responses API + web_search`로 절대 날짜 기준 검색을 수행
+8. reviewer(D)가 section별 review item을 생성하고, draft 편집기에서 chat/apply 수정 및 md/txt 다운로드를 실행
 
 ## 5. API 설계(해당 시)
 - 현재 구현:
@@ -60,10 +59,7 @@
   - `/api/projects/{project_id}/draft/chat/{message_id}/apply` `POST`
   - `/api/projects/{project_id}/questions` `GET`
   - `/api/projects/{project_id}/questions/{question_id}` `PATCH`
-  - `/api/projects/{project_id}/mapping` `GET`
-  - `/api/projects/{project_id}/mapping/run` `POST`
   - `/api/projects/{project_id}/export` `POST`
-  - `/api/projects/{project_id}/export/{export_session_id}/preview` `GET`
   - `/api/projects/{project_id}/export/{export_session_id}/download` `GET`
   - `/api/projects/{project_id}/rewrite` `POST`
   - `/api/health/openai` `GET`
@@ -72,7 +68,7 @@
 ## 6. 데이터 모델(해당 시)
 - `Project`: 현재 구현
 - `LibraryAsset`, `ProjectAssetLink`, `DraftSection`, `OpenQuestion`: 현재 구현
-- `ProjectFile(role 포함)`, `RfpExtraction(project_summary_text 포함)`, `RfpRequirementItem`, `EvaluationItem(score_text 포함)`, `OutlineSection`, `Citation`, `EvalMapping`, `MappingWarning`, `ExportSession`, `DocumentChunk`, `DraftChatMessage`: 현재 구현
+- `ProjectFile(role 포함)`, `RfpExtraction(project_summary_text 포함)`, `RfpRequirementItem`, `EvaluationItem(score_text 포함)`, `OutlineSection`, `Citation`, `ExportSession`, `DocumentChunk`, `DraftChatMessage`: 현재 구현
 - `owner_user_id`는 MVP에서 `"local"` 고정
 
 ## 7. 폴더/파일 구조
@@ -86,7 +82,7 @@
 - SQLite로 시작하되 `DATABASE_URL`로 DB 교체 가능하게 구성했다.
 - Alembic을 미리 배치해 마이그레이션 전환 비용을 줄였다.
 - `lib/api.ts`를 공용 진입점으로 두어 Next.js 쪽 API 호출 방식을 단일화했다.
-- 시스템 표기는 "본문 표기 + DB(OpenQuestion) + UI 패널" 구조를 유지할 수 있게 뼈대를 먼저 만들었다.
+- 시스템 표기는 본문에 직접 쓰지 않고 `OpenQuestion` 저장소와 `작성 확인 사항` UI 패널로 분리한다.
 - RFP 추출은 텍스트 우선으로 처리하고, 스캔/OCR 필요 여부만 메타데이터로 남긴다.
 - RFP/회사자료는 먼저 로컬 chunk로 저장하고, 추출/생성에는 필요한 chunk만 넣어 whole-document prompt를 피한다.
 - RFP 추출은 routed chunk를 묶어 섹션별 OpenAI structured output으로 구현한다.
@@ -95,12 +91,11 @@
 - RFP 추출은 사용자가 체크한 파일만 대상으로 수행해 불필요한 토큰 사용과 timeout 위험을 줄인다.
 - OpenAI request timeout 기본값은 120초로 두고, section 추출은 timeout 시 1회 재시도한다.
 - draft 편집은 전체 초안을 다시 생성하지 않고, 선택 구간과 주변 문맥만 사용한 chat/apply로 토큰 사용을 낮춘다.
-- 매핑 검증은 단순 토큰 겹침 기반 휴리스틱으로 시작해 후속 고도화를 열어 둔다.
-- Export는 세션별 폴더를 만들어 preview와 산출물 경로를 함께 관리한다.
+- Export는 세션별 폴더를 만들어 md/txt 산출물 경로를 관리한다.
 - outline은 구조 정의 전용으로 두고, ordered flat list + `depth`로 계층을 표현하며 번호는 `display_label`에 자동 계산해 저장한다.
 - 검색/인용은 outline에서 제거하고, 생성 제어는 draft preparation 영역으로 이동한다.
-- draft 생성은 먼저 목차별 plan을 계산하고, 사용자가 고른 requirement/chunk만으로 section별 generation을 수행한다.
-- search는 현재 외부 웹 검색이 아니라 프로젝트에 저장된 RFP/연결 자료 chunk를 lexical retrieval로 재활용해 Citation을 생성한다.
+- draft 생성은 planner(A) -> writer(B) -> researcher(C) -> reviewer(D) 순서의 섹션 파이프라인으로 수행한다.
+- 최신 검색은 researcher(C)가 OpenAI `Responses API + web_search`에 절대 날짜를 명시해 최신 정보를 찾고, 결과 출처를 Citation으로 저장한다.
 - OpenAI 키는 `api/.env`에서 읽고, `/api/health/openai`로 모델 접근을 검증한다.
 - retrieval은 우선 로컬 파일 chunk + SQLite 메타데이터 + lexical scoring으로 시작하고, 필요 시 embedding/vector store로 확장한다.
 

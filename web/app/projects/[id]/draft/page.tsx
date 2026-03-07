@@ -21,10 +21,10 @@ async function loadDraftWorkspace(projectId: number): Promise<{
   outlineSections: OutlineSection[];
   rfpFileCount: number;
   rfpReady: boolean;
+  reviewItems: OpenQuestion[];
   section: DraftSection;
-  questions: OpenQuestion[];
 }> {
-  const [sections, questions, outlineSections, extraction, linkedAssets] = await Promise.all([
+  const [sections, reviewItems, outlineSections, extraction, linkedAssets] = await Promise.all([
     listDraftSections(projectId),
     listQuestions(projectId),
     getOutline(projectId),
@@ -44,8 +44,8 @@ async function loadDraftWorkspace(projectId: number): Promise<{
     outlineSections,
     rfpFileCount: extraction.files.length,
     rfpReady: Boolean(extraction.raw_text.trim()),
+    reviewItems,
     section,
-    questions
   };
 }
 
@@ -56,17 +56,16 @@ export default async function ProjectDraftPage({ params }: ProjectDraftPageProps
     notFound();
   }
 
-  const { chatMessages, linkedAssetCount, outlineSections, rfpFileCount, rfpReady, section, questions } =
+  const { chatMessages, linkedAssetCount, outlineSections, rfpFileCount, rfpReady, reviewItems, section } =
     await loadDraftWorkspace(projectId);
 
   return (
-    <main className="page-shell">
+    <main className="page-shell draft-page-shell">
       <section className="detail-panel">
         <p className="eyebrow">Draft Editor</p>
         <h1 className="card-title">Project #{projectId} Draft Workspace</h1>
         <p className="page-copy">
-          RFP 추출 결과, 연결 자료, 저장된 목차를 확인한 뒤 초안을 생성하고 같은 화면에서
-          편집합니다.
+          RFP 추출 결과와 저장된 목차를 확인한 뒤 초안을 생성하고 같은 화면에서 편집합니다.
         </p>
       </section>
 
@@ -76,7 +75,7 @@ export default async function ProjectDraftPage({ params }: ProjectDraftPageProps
         initialOutlineSections={outlineSections}
         initialRfpFileCount={rfpFileCount}
         initialRfpReady={rfpReady}
-        initialQuestions={questions}
+        initialReviewItems={reviewItems}
         initialSection={section}
         projectId={projectId}
       />

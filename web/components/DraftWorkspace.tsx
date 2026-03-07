@@ -1,10 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   applyDraftChatMessage,
+  buildExportDownloadUrl,
   createDraftChatTurn,
+  createExportSession,
   generateDraft,
   getDraftPlan,
   updateDraftSection,
@@ -12,7 +14,6 @@ import {
 } from "@/lib/api";
 import type {
   DraftChatMessage,
-  DraftGeneratePayload,
   DraftPlanResult,
   DraftSection,
   OpenQuestion,
@@ -20,7 +21,6 @@ import type {
 } from "@/lib/types";
 import { EditorTextarea } from "@/components/EditorTextarea";
 import { OpenQuestionPanel } from "@/components/OpenQuestionPanel";
-import { SystemNotice } from "@/components/SystemNotice";
 
 type DraftWorkspaceProps = {
   projectId: number;
@@ -29,7 +29,7 @@ type DraftWorkspaceProps = {
   initialRfpFileCount: number;
   initialRfpReady: boolean;
   initialSection: DraftSection;
-  initialQuestions: OpenQuestion[];
+  initialReviewItems: OpenQuestion[];
   initialChatMessages: DraftChatMessage[];
 };
 
@@ -39,42 +39,27 @@ type SelectionState = {
   text: string;
 };
 
+const EMPTY_SELECTION: SelectionState = { start: 0, end: 0, text: "" };
+
 const DRAFT_GENERATION_PROGRESS_STEPS = [
-  "저장된 목차별 생성 계획과 근거 선택 상태를 확인하고 있습니다.",
-  "선택된 RFP 요구사항과 회사 자료를 섹션별 컨텍스트로 정리하고 있습니다.",
-  "섹션별 초안을 생성하고 후속 질문을 정리하고 있습니다."
+  "저장된 목차와 RFP 요약 상태를 확인하고 있습니다.",
+  "목차별 초안을 생성하고 있습니다.",
+  "작성 확인 사항을 정리하고 있습니다."
 ];
+const DOWNLOAD_FORMAT_OPTIONS = ["md", "txt"] as const;
 
-type DraftSectionSelection = {
-  requirementIds: number[];
-  chunkIds: number[];
-};
+type DownloadFormat = (typeof DOWNLOAD_FORMAT_OPTIONS)[number];
 
-function extractSystemNotices(content: string): string[] {
-  return content
-    .split("\n")
-    .filter((line) => line.includes("[확인 필요(시스템)]"))
-    .map((line) => line.replace("[확인 필요(시스템)]", "").trim())
-    .filter(Boolean);
+function hasSelection(selection: SelectionState): boolean {
+  return selection.start !== selection.end && selection.text.length > 0;
 }
 
-function buildSelectionState(plan: DraftPlanResult): Record<number, DraftSectionSelection> {
-  return Object.fromEntries(
-    plan.sections.map((section) => [
-      section.section_id,
-      {
-        requirementIds: section.matched_requirements.map((requirement) => requirement.id),
-        chunkIds: [...section.rfp_sources, ...section.library_sources].map((source) => source.chunk_id)
-      }
-    ])
-  );
-}
-
-function toggleNumberInList(values: number[], target: number): number[] {
-  if (values.includes(target)) {
-    return values.filter((value) => value !== target);
+function selectionMatchesContent(selection: SelectionState, currentContent: string): boolean {
+  if (!hasSelection(selection)) {
+    return true;
   }
-  return [...values, target];
+
+  return currentContent.slice(selection.start, selection.end) === selection.text;
 }
 
 export function DraftWorkspace({
@@ -84,48 +69,54 @@ export function DraftWorkspace({
   initialRfpFileCount,
   initialRfpReady,
   initialSection,
-  initialQuestions,
+  initialReviewItems,
   initialChatMessages
 }: DraftWorkspaceProps) {
   const [content, setContent] = useState(initialSection.content_md);
-  const [questions, setQuestions] = useState(initialQuestions);
+  const [questions, setQuestions] = useState(initialReviewItems);
   const [chatMessages, setChatMessages] = useState(initialChatMessages);
   const [sectionTitle, setSectionTitle] = useState(initialSection.title);
-  const [selection, setSelection] = useState<SelectionState>({ start: 0, end: 0, text: "" });
+  const [editorSelection, setEditorSelection] = useState<SelectionState>(EMPTY_SELECTION);
+  const [committedSelection, setCommittedSelection] = useState<SelectionState>(EMPTY_SELECTION);
   const [chatInput, setChatInput] = useState("");
   const [statusLabel, setStatusLabel] = useState(initialSection.status);
   const [draftPlan, setDraftPlan] = useState<DraftPlanResult | null>(null);
-  const [sectionSelections, setSectionSelections] = useState<Record<number, DraftSectionSelection>>({});
   const [isPrepCollapsed, setIsPrepCollapsed] = useState(false);
   const [isLoadingPlan, setIsLoadingPlan] = useState(true);
-  const [isRefreshingPlan, setIsRefreshingPlan] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generateProgress, setGenerateProgress] = useState(8);
   const [generateStepIndex, setGenerateStepIndex] = useState(0);
   const [isSaving, setIsSaving] = useState(false);
+  const [isCopying, setIsCopying] = useState(false);
+  const [copyFeedback, setCopyFeedback] = useState<string | null>(null);
+  const [isDownloadModalOpen, setIsDownloadModalOpen] = useState(false);
+  const [selectedDownloadFormats, setSelectedDownloadFormats] = useState<DownloadFormat[]>([]);
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
   const [isSendingChat, setIsSendingChat] = useState(false);
   const [applyingMessageId, setApplyingMessageId] = useState<number | null>(null);
   const [pendingQuestionId, setPendingQuestionId] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [planError, setPlanError] = useState<string | null>(null);
+  const chatInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const copyFeedbackTimeoutRef = useRef<number | null>(null);
 
-  const notices = useMemo(() => extractSystemNotices(content), [content]);
   const canGenerate = Boolean(draftPlan?.ready);
-  const prepOutlineRows = useMemo(
-    () =>
-      draftPlan?.sections.map((section) => ({
-        id: section.section_id,
-        depth: section.depth,
-        label: section.heading_text
-      })) ??
-      initialOutlineSections.map((section) => ({
-        id: section.id,
-        depth: section.depth,
-        label: `${section.display_label ? `${section.display_label} ` : ""}${section.title}`
-      })),
-    [draftPlan, initialOutlineSections]
-  );
+  const hasCommittedSelection = hasSelection(committedSelection);
+  const isCommittedSelectionStale = hasCommittedSelection && !selectionMatchesContent(committedSelection, content);
+  const canDownload = selectedDownloadFormats.length > 0;
+  const prepOutlineRows =
+    draftPlan?.sections.map((section) => ({
+      id: section.section_id,
+      depth: section.depth,
+      label: section.heading_text
+    })) ??
+    initialOutlineSections.map((section) => ({
+      id: section.id,
+      depth: section.depth,
+      label: `${section.display_label ? `${section.display_label} ` : ""}${section.title}`
+    }));
 
   useEffect(() => {
     if (!isGenerating) {
@@ -149,75 +140,32 @@ export function DraftWorkspace({
     return () => window.clearInterval(intervalId);
   }, [isGenerating]);
 
-  async function loadDraftPlan(options?: { refresh?: boolean }): Promise<DraftPlanResult | null> {
-    const isRefresh = Boolean(options?.refresh);
-    try {
-      if (isRefresh) {
-        setIsRefreshingPlan(true);
-      } else {
-        setIsLoadingPlan(true);
+  useEffect(() => {
+    return () => {
+      if (copyFeedbackTimeoutRef.current !== null) {
+        window.clearTimeout(copyFeedbackTimeoutRef.current);
       }
+    };
+  }, []);
+
+  async function loadDraftPlan(): Promise<DraftPlanResult | null> {
+    try {
+      setIsLoadingPlan(true);
       setPlanError(null);
       const nextPlan = await getDraftPlan(projectId);
       setDraftPlan(nextPlan);
-      setSectionSelections(buildSelectionState(nextPlan));
       return nextPlan;
     } catch (loadError) {
-      setPlanError(loadError instanceof Error ? loadError.message : "초안 생성 계획을 불러오지 못했습니다.");
+      setPlanError(loadError instanceof Error ? loadError.message : "초안 준비 상태를 불러오지 못했습니다.");
       return null;
     } finally {
       setIsLoadingPlan(false);
-      setIsRefreshingPlan(false);
     }
   }
 
   useEffect(() => {
     void loadDraftPlan();
   }, [projectId]);
-
-  function toggleRequirement(sectionId: number, requirementId: number) {
-    setSectionSelections((current) => {
-      const existing = current[sectionId] ?? { requirementIds: [], chunkIds: [] };
-      return {
-        ...current,
-        [sectionId]: {
-          ...existing,
-          requirementIds: toggleNumberInList(existing.requirementIds, requirementId)
-        }
-      };
-    });
-  }
-
-  function toggleSource(sectionId: number, chunkId: number) {
-    setSectionSelections((current) => {
-      const existing = current[sectionId] ?? { requirementIds: [], chunkIds: [] };
-      return {
-        ...current,
-        [sectionId]: {
-          ...existing,
-          chunkIds: toggleNumberInList(existing.chunkIds, chunkId)
-        }
-      };
-    });
-  }
-
-  function buildGeneratePayload(plan: DraftPlanResult): DraftGeneratePayload {
-    return {
-      mode: "full",
-      section_overrides: plan.sections.map((section) => {
-        const fallbackRequirementIds = section.matched_requirements.map((requirement) => requirement.id);
-        const fallbackChunkIds = [...section.rfp_sources, ...section.library_sources].map(
-          (source) => source.chunk_id
-        );
-        const selectionState = sectionSelections[section.section_id];
-        return {
-          section_id: section.section_id,
-          requirement_ids: selectionState?.requirementIds ?? fallbackRequirementIds,
-          chunk_ids: selectionState?.chunkIds ?? fallbackChunkIds
-        };
-      })
-    };
-  }
 
   async function handleSave() {
     try {
@@ -235,6 +183,117 @@ export function DraftWorkspace({
     }
   }
 
+  async function handleCopyDraft() {
+    const textToCopy = content.trim();
+    if (!textToCopy) {
+      setError("복사할 초안 내용이 없습니다.");
+      return;
+    }
+
+    try {
+      setIsCopying(true);
+      setError(null);
+
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(content);
+      } else {
+        const tempTextarea = document.createElement("textarea");
+        tempTextarea.value = content;
+        tempTextarea.setAttribute("readonly", "true");
+        tempTextarea.style.position = "absolute";
+        tempTextarea.style.left = "-9999px";
+        document.body.append(tempTextarea);
+        tempTextarea.select();
+        document.execCommand("copy");
+        tempTextarea.remove();
+      }
+
+      setCopyFeedback("복사 완료");
+      if (copyFeedbackTimeoutRef.current !== null) {
+        window.clearTimeout(copyFeedbackTimeoutRef.current);
+      }
+      copyFeedbackTimeoutRef.current = window.setTimeout(() => {
+        setCopyFeedback(null);
+        copyFeedbackTimeoutRef.current = null;
+      }, 1600);
+    } catch (copyError) {
+      setError(copyError instanceof Error ? copyError.message : "초안 복사에 실패했습니다.");
+    } finally {
+      setIsCopying(false);
+    }
+  }
+
+  function openDownloadModal() {
+    setSelectedDownloadFormats([]);
+    setDownloadError(null);
+    setIsDownloadModalOpen(true);
+  }
+
+  function closeDownloadModal() {
+    if (isDownloading) {
+      return;
+    }
+    setSelectedDownloadFormats([]);
+    setDownloadError(null);
+    setIsDownloadModalOpen(false);
+  }
+
+  function toggleDownloadFormat(format: DownloadFormat) {
+    setSelectedDownloadFormats((current) =>
+      current.includes(format) ? current.filter((item) => item !== format) : [...current, format]
+    );
+    setDownloadError(null);
+  }
+
+  function queueFileDownload(url: string, offsetMs: number) {
+    window.setTimeout(() => {
+      const iframe = document.createElement("iframe");
+      iframe.style.display = "none";
+      iframe.src = url;
+      document.body.append(iframe);
+      window.setTimeout(() => iframe.remove(), 5000);
+    }, offsetMs);
+  }
+
+  async function handleDownloadDraft() {
+    if (!canDownload) {
+      setDownloadError("최소 한 개 이상의 형식을 선택해 주세요.");
+      return;
+    }
+
+    const formatsToDownload = [...selectedDownloadFormats];
+
+    try {
+      setIsDownloading(true);
+      setDownloadError(null);
+      setError(null);
+      setSuccessMessage(null);
+
+      const synced = await updateDraftSection(projectId, initialSection.id, { content_md: content });
+      setStatusLabel(synced.status);
+      setSectionTitle(synced.title);
+
+      const session = await createExportSession(projectId, { formats: formatsToDownload });
+      formatsToDownload.forEach((format, index) => {
+        queueFileDownload(buildExportDownloadUrl(projectId, session.id, format), index * 250);
+      });
+
+      setSelectedDownloadFormats([]);
+      setIsDownloadModalOpen(false);
+      setSuccessMessage(
+        `${formatsToDownload.map((format) => format.toUpperCase()).join(", ")} 다운로드를 시작했습니다.`
+      );
+    } catch (downloadRequestError) {
+      setDownloadError(
+        downloadRequestError instanceof Error
+          ? downloadRequestError.message
+          : "다운로드 준비에 실패했습니다."
+      );
+    } finally {
+      setIsDownloading(false);
+    }
+  }
+
   async function handleResolve(questionId: string, nextStatus: "open" | "resolved") {
     try {
       setPendingQuestionId(questionId);
@@ -245,7 +304,7 @@ export function DraftWorkspace({
         current.map((question) => (question.id === questionId ? updated : question))
       );
     } catch (questionError) {
-      setError(questionError instanceof Error ? questionError.message : "질문 상태 변경에 실패했습니다.");
+      setError(questionError instanceof Error ? questionError.message : "작성 확인 사항 상태 변경에 실패했습니다.");
     } finally {
       setPendingQuestionId(null);
     }
@@ -254,6 +313,10 @@ export function DraftWorkspace({
   async function handleSendChat() {
     if (!chatInput.trim()) {
       setError("AI에게 보낼 수정 요청을 입력해 주세요.");
+      return;
+    }
+    if (isCommittedSelectionStale) {
+      setError("선택된 텍스트가 변경되었습니다. DRAFT EDITOR에서 다시 선택 후 AI EDIT를 눌러 주세요.");
       return;
     }
 
@@ -267,11 +330,15 @@ export function DraftWorkspace({
       const turn = await createDraftChatTurn(projectId, {
         section_id: initialSection.id,
         message: chatInput.trim(),
-        selection_start: selection.text ? selection.start : null,
-        selection_end: selection.text ? selection.end : null,
-        selection_text: selection.text || null
+        selection_start: hasCommittedSelection ? committedSelection.start : null,
+        selection_end: hasCommittedSelection ? committedSelection.end : null,
+        selection_text: hasCommittedSelection ? committedSelection.text : null
       });
       setChatMessages((current) => [...current, turn.user_message, turn.assistant_message]);
+      if (turn.review_items.length > 0) {
+        setQuestions((current) => [...current, ...turn.review_items]);
+        setSuccessMessage(`AI 요청을 반영하며 작성 확인 사항 ${turn.review_items.length}건을 추가했습니다.`);
+      }
       setChatInput("");
     } catch (chatError) {
       setError(chatError instanceof Error ? chatError.message : "AI 편집 요청에 실패했습니다.");
@@ -289,6 +356,8 @@ export function DraftWorkspace({
       setContent(response.section.content_md);
       setStatusLabel(response.section.status);
       setSectionTitle(response.section.title);
+      setEditorSelection(EMPTY_SELECTION);
+      setCommittedSelection(EMPTY_SELECTION);
       setChatMessages((current) =>
         current.map((message) => (message.id === messageId ? response.message : message))
       );
@@ -311,22 +380,36 @@ export function DraftWorkspace({
       setIsGenerating(true);
       setError(null);
       setSuccessMessage(null);
-      const result = await generateDraft(projectId, buildGeneratePayload(plan));
+      const result = await generateDraft(projectId, { mode: "full" });
       setContent(result.section.content_md);
       setQuestions(result.questions);
       setChatMessages([]);
       setSectionTitle(result.section.title);
       setStatusLabel(result.section.status);
-      setSelection({ start: 0, end: 0, text: "" });
+      setEditorSelection(EMPTY_SELECTION);
+      setCommittedSelection(EMPTY_SELECTION);
       setChatInput("");
       setSuccessMessage(
-        `초안을 생성했습니다. 후속 질문 ${result.questions.length}건이 함께 갱신되었습니다.`
+        `초안을 생성했습니다. 작성 확인 사항 ${result.questions.length}건이 함께 갱신되었습니다.`
       );
     } catch (generateError) {
       setError(generateError instanceof Error ? generateError.message : "초안 생성에 실패했습니다.");
     } finally {
       setIsGenerating(false);
     }
+  }
+
+  function handleCommitSelection(nextSelection: SelectionState) {
+    setCommittedSelection(nextSelection);
+    setError(null);
+    setSuccessMessage(null);
+    window.requestAnimationFrame(() => {
+      chatInputRef.current?.focus();
+    });
+  }
+
+  function handleClearCommittedSelection() {
+    setCommittedSelection(EMPTY_SELECTION);
   }
 
   return (
@@ -337,8 +420,8 @@ export function DraftWorkspace({
             <p className="eyebrow">Draft Preparation</p>
             <h2 className="card-title">초안 생성 준비</h2>
             <p className="page-copy">
-              확정된 RFP, 연결된 회사 자료, 저장된 목차를 확인한 뒤 초안을 생성합니다. 인터넷
-              검색 보강은 추후 이 영역에 이어서 붙일 예정입니다.
+              확정된 RFP 요약과 저장된 목차를 확인한 뒤 초안을 생성합니다. 검색 출처 표기는
+              검색 기능이 준비되면 별도로 붙입니다.
             </p>
           </div>
           <div>
@@ -353,14 +436,6 @@ export function DraftWorkspace({
               </span>
             </div>
             <div className="action-row" style={{ justifyContent: "flex-end" }}>
-              <button
-                className="secondary-button"
-                disabled={isLoadingPlan || isRefreshingPlan}
-                onClick={() => void loadDraftPlan({ refresh: true })}
-                type="button"
-              >
-                {isRefreshingPlan ? "근거 새로고침 중..." : "근거 추천 새로고침"}
-              </button>
               <button
                 className="secondary-button"
                 onClick={() => setIsPrepCollapsed((current) => !current)}
@@ -383,7 +458,7 @@ export function DraftWorkspace({
                   <span className="subtle-copy">loading</span>
                 </div>
                 <p className="page-copy" style={{ marginTop: 10 }}>
-                  목차별 추천 요구사항과 근거 문서를 정리하고 있습니다.
+                  저장된 목차와 RFP 요약 상태를 확인하고 있습니다.
                 </p>
                 <div className="progress-bar" aria-hidden="true">
                   <div className="progress-fill" style={{ width: "42%" }} />
@@ -392,13 +467,11 @@ export function DraftWorkspace({
             ) : null}
 
             {draftPlan?.warnings.length ? (
-              <div className="stack-list">
+              <div className="draft-warning-list">
                 {draftPlan.warnings.map((warning, index) => (
-                  <SystemNotice
-                    key={`${warning}-${index}`}
-                    title={`생성 전 확인 #${index + 1}`}
-                    description={warning}
-                  />
+                  <p key={`${warning}-${index}`} className="draft-warning-item">
+                    {warning}
+                  </p>
                 ))}
               </div>
             ) : null}
@@ -418,8 +491,8 @@ export function DraftWorkspace({
                   </li>
                   <li>
                     {initialLinkedAssetCount > 0
-                      ? "회사 자료 연결 완료"
-                      : "자료 라이브러리에서 회사 자료를 연결하면 초안 품질이 좋아집니다."}
+                      ? `연결된 회사 자료 ${initialLinkedAssetCount}건`
+                      : "연결된 회사 자료 없음"}
                   </li>
                 </ul>
               </article>
@@ -444,132 +517,6 @@ export function DraftWorkspace({
                 )}
               </article>
             </div>
-
-            {draftPlan?.sections.length ? (
-              <section className="stack-list">
-                {draftPlan.sections.map((section) => {
-                  const selectionState = sectionSelections[section.section_id] ?? {
-                    requirementIds: section.matched_requirements.map((requirement) => requirement.id),
-                    chunkIds: [...section.rfp_sources, ...section.library_sources].map(
-                      (source) => source.chunk_id
-                    )
-                  };
-                  const selectedSourceCount = selectionState.chunkIds.length;
-                  return (
-                    <article key={section.section_id} className="mini-card draft-plan-card">
-                      <div className="toolbar">
-                        <div>
-                          <p className="eyebrow">Section Plan</p>
-                          <h3 className="card-title">{section.heading_text}</h3>
-                          <p className="subtle-copy">{section.heading_path.join(" > ")}</p>
-                        </div>
-                        <div className="status-row" style={{ marginTop: 0 }}>
-                          <span className="status-pill ok">{selectionState.requirementIds.length} requirements</span>
-                          <span className="status-pill ok">{selectedSourceCount} sources</span>
-                        </div>
-                      </div>
-
-                      <div className="draft-plan-block">
-                        <p className="eyebrow">Requirements</p>
-                        {section.matched_requirements.length === 0 ? (
-                          <p className="card-copy">자동 매칭된 요구사항이 없습니다. 근거 문서만으로 생성됩니다.</p>
-                        ) : (
-                          <div className="checkbox-list">
-                            {section.matched_requirements.map((requirement) => {
-                              const checked = selectionState.requirementIds.includes(requirement.id);
-                              const heading = [requirement.requirement_no, requirement.name]
-                                .filter(Boolean)
-                                .join(" ")
-                                .trim();
-                              return (
-                                <label key={requirement.id} className="checkbox-row">
-                                  <input
-                                    checked={checked}
-                                    className="checkbox-input"
-                                    onChange={() => toggleRequirement(section.section_id, requirement.id)}
-                                    type="checkbox"
-                                  />
-                                  <div>
-                                    <strong>{heading || "무제 요구사항"}</strong>
-                                    <p className="card-copy" style={{ marginTop: 8 }}>
-                                      {requirement.definition || requirement.details || "정의된 내용 없음"}
-                                    </p>
-                                  </div>
-                                </label>
-                              );
-                            })}
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="draft-plan-block">
-                        <p className="eyebrow">RFP Sources</p>
-                        {section.rfp_sources.length === 0 ? (
-                          <p className="card-copy">자동 추천된 RFP 원문 근거가 없습니다.</p>
-                        ) : (
-                          <div className="checkbox-list">
-                            {section.rfp_sources.map((source) => {
-                              const checked = selectionState.chunkIds.includes(source.chunk_id);
-                              return (
-                                <label key={source.chunk_id} className="checkbox-row">
-                                  <input
-                                    checked={checked}
-                                    className="checkbox-input"
-                                    onChange={() => toggleSource(section.section_id, source.chunk_id)}
-                                    type="checkbox"
-                                  />
-                                  <div>
-                                    <strong>{source.label}</strong>
-                                    <p className="subtle-copy" style={{ marginTop: 6 }}>
-                                      {source.route_label ? `${source.route_label} · ` : ""}score {source.score}
-                                    </p>
-                                    <p className="card-copy" style={{ marginTop: 8 }}>
-                                      {source.snippet}
-                                    </p>
-                                  </div>
-                                </label>
-                              );
-                            })}
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="draft-plan-block">
-                        <p className="eyebrow">Company Sources</p>
-                        {section.library_sources.length === 0 ? (
-                          <p className="card-copy">연결된 회사 자료에서 자동 추천된 근거가 없습니다.</p>
-                        ) : (
-                          <div className="checkbox-list">
-                            {section.library_sources.map((source) => {
-                              const checked = selectionState.chunkIds.includes(source.chunk_id);
-                              return (
-                                <label key={source.chunk_id} className="checkbox-row">
-                                  <input
-                                    checked={checked}
-                                    className="checkbox-input"
-                                    onChange={() => toggleSource(section.section_id, source.chunk_id)}
-                                    type="checkbox"
-                                  />
-                                  <div>
-                                    <strong>{source.label}</strong>
-                                    <p className="subtle-copy" style={{ marginTop: 6 }}>
-                                      {source.route_label ? `${source.route_label} · ` : ""}score {source.score}
-                                    </p>
-                                    <p className="card-copy" style={{ marginTop: 8 }}>
-                                      {source.snippet}
-                                    </p>
-                                  </div>
-                                </label>
-                              );
-                            })}
-                          </div>
-                        )}
-                      </div>
-                    </article>
-                  );
-                })}
-              </section>
-            ) : null}
 
             <div className="action-row">
               <button
@@ -606,63 +553,87 @@ export function DraftWorkspace({
         {error ? <p className="error-text">{error}</p> : null}
       </section>
 
-      <section className="split-layout" style={{ marginTop: 0 }}>
-        <section className="panel-stack">
-          {notices.length > 0 ? (
-            notices.map((notice, index) => (
-              <SystemNotice
-                key={`${notice}-${index}`}
-                title={`확인 필요(시스템) #${index + 1}`}
-                description={notice}
-              />
-            ))
-          ) : (
-            <SystemNotice
-              title="시스템 표기 없음"
-              description="현재 초안에는 [확인 필요(시스템)] 마커가 없습니다."
-            />
-          )}
-
+      <section className="split-layout draft-editor-layout" style={{ marginTop: 0 }}>
+        <section className="panel-stack draft-editor-main">
           <EditorTextarea
+            selection={editorSelection}
             onChange={setContent}
-            onSelectionChange={setSelection}
+            onCommitSelection={handleCommitSelection}
+            onSelectionChange={setEditorSelection}
             status={statusLabel}
             title={sectionTitle}
             value={content}
           />
 
-          <div className="content-panel">
-            <p className="eyebrow">Editor Actions</p>
-            <h2 className="card-title">저장 및 선택 상태</h2>
-            <p className="card-copy">
-              선택된 텍스트: {selection.text.trim() || "선택된 구간 없음"}
-            </p>
-            <div className="action-row">
-              <button
-                className="secondary-button"
-                disabled={isSaving}
-                onClick={() => void handleSave()}
-                type="button"
-              >
-                {isSaving ? "저장 중..." : "초안 저장"}
-              </button>
-            </div>
+          <div className="action-row draft-editor-save-row">
+            <span className="draft-editor-feedback-slot" aria-live="polite">
+              {copyFeedback ?? "\u00A0"}
+            </span>
+            <button
+              className="button"
+              disabled={isCopying}
+              onClick={() => void handleCopyDraft()}
+              type="button"
+            >
+              전체 복사
+            </button>
+            <button
+              className="button"
+              disabled={isSaving || isDownloading}
+              onClick={() => void handleSave()}
+              type="button"
+            >
+              {isSaving ? "저장 중..." : "초안 저장"}
+            </button>
+            <button
+              className="button"
+              disabled={isDownloading}
+              onClick={openDownloadModal}
+              type="button"
+            >
+              다운로드
+            </button>
           </div>
         </section>
 
-        <aside className="panel-stack">
+        <aside className="panel-stack draft-editor-side">
           <section className="question-list">
             <p className="eyebrow">AI Edit Chat</p>
             <h2 className="card-title">대화형 수정</h2>
-            <p className="card-copy">
-              선택 구간이 있으면 해당 문장만 수정 제안을 만들고, 없으면 현재 초안에 대한 편집
-              가이드를 반환합니다.
-            </p>
+            <div className={`preview-box draft-selection-preview${hasCommittedSelection ? "" : " is-empty"}`}>
+              <div className="draft-selection-preview-header">
+                <p className="eyebrow">Selected Text</p>
+                {hasCommittedSelection ? (
+                  <button className="secondary-button draft-selection-clear" onClick={handleClearCommittedSelection} type="button">
+                    선택 해제
+                  </button>
+                ) : null}
+              </div>
+              {hasCommittedSelection ? (
+                <>
+                  <pre className="mono chat-code">{committedSelection.text}</pre>
+                  {isCommittedSelectionStale ? (
+                    <p className="error-text" style={{ marginTop: 0 }}>
+                      초안 내용이 바뀌었습니다. 다시 선택 후 `AI EDIT`를 눌러 주세요.
+                    </p>
+                  ) : null}
+                </>
+              ) : (
+                <p className="card-copy" style={{ marginTop: 0 }}>
+                  DRAFT EDITOR에서 텍스트를 선택한 뒤 `AI EDIT` 칩을 누르면 여기에 들어옵니다.
+                </p>
+              )}
+            </div>
             <label className="field" style={{ marginTop: 16 }}>
               <span>AI에게 요청</span>
               <textarea
+                ref={chatInputRef}
                 className="input-textarea"
-                placeholder="예: 이 문단을 더 공공사업 제안서 톤으로 다듬고, 근거가 부족한 문장은 확인 필요로 표시해 줘"
+                placeholder={
+                  hasCommittedSelection
+                    ? "예: 이 선택 구간을 더 간결한 제안서 문체로 다듬어 줘"
+                    : "예: 이 문단을 더 공공사업 제안서 톤으로 다듬고, 근거가 부족한 문장은 확인 필요로 표시해 줘"
+                }
                 value={chatInput}
                 onChange={(event) => setChatInput(event.target.value)}
               />
@@ -726,6 +697,61 @@ export function DraftWorkspace({
           />
         </aside>
       </section>
+
+      {isDownloadModalOpen ? (
+        <div
+          aria-hidden="true"
+          className="modal-scrim"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) {
+              closeDownloadModal();
+            }
+          }}
+        >
+          <section aria-labelledby="draft-download-modal-title" aria-modal="true" className="modal-card" role="dialog">
+            <p className="eyebrow">Draft Download</p>
+            <h2 className="card-title" id="draft-download-modal-title">
+              다운로드 형식 선택
+            </h2>
+            <p className="page-copy">
+              저장되지 않은 변경은 먼저 반영한 뒤 선택한 형식으로 다운로드를 시작합니다.
+            </p>
+            <div className="checkbox-list download-format-list">
+              {DOWNLOAD_FORMAT_OPTIONS.map((format) => (
+                <label key={format} className="checkbox-row">
+                  <input
+                    checked={selectedDownloadFormats.includes(format)}
+                    onChange={() => toggleDownloadFormat(format)}
+                    type="checkbox"
+                  />
+                  <span>
+                    <strong>{format}</strong>
+                  </span>
+                </label>
+              ))}
+            </div>
+            {downloadError ? <p className="error-text">{downloadError}</p> : null}
+            <div className="action-row modal-actions">
+              <button
+                className="secondary-button"
+                disabled={isDownloading}
+                onClick={closeDownloadModal}
+                type="button"
+              >
+                취소
+              </button>
+              <button
+                className="button"
+                disabled={isDownloading || !canDownload}
+                onClick={() => void handleDownloadDraft()}
+                type="button"
+              >
+                {isDownloading ? "다운로드 준비 중..." : "다운로드"}
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
     </section>
   );
 }

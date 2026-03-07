@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class ExportCreateRequest(BaseModel):
-    formats: list[Literal["md", "txt", "docx", "xlsx"]] = Field(default_factory=lambda: ["md"])
+    formats: list[Literal["md", "txt"]] = Field(default_factory=lambda: ["md"])
 
 
 class ExportSessionRead(BaseModel):
@@ -19,9 +19,3 @@ class ExportSessionRead(BaseModel):
     files_json: str
     status: str
     created_at: datetime
-
-
-class ExportPreviewRead(BaseModel):
-    export_session_id: str
-    preview_md: str
-    formats: list[str]

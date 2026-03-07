@@ -46,7 +46,12 @@ export type OpenQuestion = {
   id: string;
   project_id: number;
   draft_section_id: number | null;
+  outline_section_id: number | null;
+  section_heading_text: string;
   question_text: string;
+  category: string;
+  severity: string;
+  source_agent: string;
   status: "open" | "resolved";
   created_at: string;
 };
@@ -117,38 +122,17 @@ export type DraftChatMessage = {
   created_at: string;
 };
 
-export type DraftPlanRequirement = {
-  id: number;
-  requirement_no: string;
-  name: string;
-  definition: string;
-  details: string;
-  selected: boolean;
-};
-
-export type DraftPlanSource = {
-  chunk_id: number;
-  document_kind: "rfp" | "library";
-  document_id: number;
-  title: string;
-  route_label: string | null;
-  page_start: number | null;
-  page_end: number | null;
-  score: number;
-  label: string;
-  snippet: string;
-  selected: boolean;
-};
-
 export type DraftSectionPlan = {
   section_id: number;
   heading_text: string;
   depth: number;
   heading_path: string[];
-  query_text: string;
-  matched_requirements: DraftPlanRequirement[];
-  rfp_sources: DraftPlanSource[];
-  library_sources: DraftPlanSource[];
+  section_goal: string;
+  assigned_requirement_titles: string[];
+  assigned_evaluation_titles: string[];
+  assigned_company_facts: string[];
+  search_topics: string[];
+  status: string;
 };
 
 export type DraftPlanResult = {
@@ -175,35 +159,6 @@ export type RfpUploadResponse = {
   file: ProjectFile;
 };
 
-export type EvalMapping = {
-  id: number;
-  project_id: number;
-  evaluation_item_id: number;
-  draft_section_id: number | null;
-  section_title: string | null;
-  strength_score: number;
-  strength_label: "strong" | "weak" | "missing";
-  rationale_text: string;
-  created_at: string;
-};
-
-export type MappingWarning = {
-  id: number;
-  project_id: number;
-  type: "missing" | "weak" | "overlap";
-  evaluation_item_id: number | null;
-  draft_section_id: number | null;
-  message: string;
-  created_at: string;
-};
-
-export type MappingResult = {
-  strategy: string;
-  evaluation_items: EvaluationItem[];
-  mappings: EvalMapping[];
-  warnings: MappingWarning[];
-};
-
 export type ExportSession = {
   id: string;
   project_id: number;
@@ -211,12 +166,6 @@ export type ExportSession = {
   files_json: string;
   status: string;
   created_at: string;
-};
-
-export type ExportPreview = {
-  export_session_id: string;
-  preview_md: string;
-  formats: string[];
 };
 
 export type SearchRunResult = {
@@ -232,16 +181,12 @@ export type DraftGenerateResult = {
 
 export type DraftGeneratePayload = {
   mode: string;
-  section_overrides?: Array<{
-    section_id: number;
-    requirement_ids: number[];
-    chunk_ids: number[];
-  }>;
 };
 
 export type DraftChatTurn = {
   user_message: DraftChatMessage;
   assistant_message: DraftChatMessage;
+  review_items: OpenQuestion[];
 };
 
 export const ASSET_CATEGORIES = [

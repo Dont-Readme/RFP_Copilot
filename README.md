@@ -4,14 +4,13 @@
 
 ## 2. 프로젝트 목적
 - 공고 요구사항/평가항목을 구조화해 제안서 작성 시간을 줄인다.
-- 평가항목-문단 매핑 검증으로 빠진 항목을 사전에 차단한다.
+- 구조화된 RFP 정보와 초안 작성 확인 사항을 한 화면에서 관리한다.
 
 ## 2.1 현재 방향 메모
-- 핵심 작성 루프는 `멀티파일 대기 목록 업로드 -> 체크한 파일만 OpenAI 사업 개요 템플릿/요구사항 추출 -> retrieval 기반 초안 생성 -> AI와 대화형 수정 -> 다운로드`다.
+- 핵심 작성 루프는 `멀티파일 대기 목록 업로드 -> 체크한 파일만 OpenAI 사업 개요 템플릿/요구사항 추출 -> 초안 생성 -> AI와 대화형 수정 -> 다운로드`다.
 - 현재 레포는 이 초기 MVP 루프를 끝까지 연결했고, 목차 정의는 `Outline`, 생성 준비와 초안 생성/편집은 `Draft`로 분리했다.
-- `Draft`는 whole-document 1회 생성이 아니라 `section planning -> 근거 선택 -> section별 generation` 구조로 동작한다.
+- `Draft`는 planner(A) -> writer(B) -> researcher(C) -> reviewer(D) 순서의 섹션 파이프라인으로 동작하고, 검토 결과는 `작성 확인 사항` 패널로 분리한다.
 - 다음 우선순위는 추출 근거 가시화와 검색 제어 고도화다.
-- 평가항목 매핑은 유지하되, 우선순위는 핵심 작성 루프 다음이다.
 
 ## 3. 대상 사용자
 - 로컬에서 혼자 제안서 초안을 만들고 싶은 사용자
@@ -21,10 +20,9 @@
 - 공고 RFP 멀티파일 업로드(role 지정)/텍스트 추출/document chunk 저장/OpenAI section별 structured extraction/사업 개요 템플릿+요구사항 확정
 - 내 자료 라이브러리(유형 지정 업로드) + 프로젝트 연결 + chunk 저장
 - Outline Builder: 계층(depth) + 자동 번호(display label) + 제목 기반 목차 구조 저장
-- Draft Workspace: 생성 준비 확인 + section별 추천 요구사항/근거 선택(source pinning) + 추출된 RFP/업로드 문서 retrieval을 쓰는 OpenAI 초안 생성 + "확인 필요(시스템)" 표기/질문 리스트
+- Draft Workspace: 생성 준비 확인 + 섹션별 계획/작성/최신 검색/검토 파이프라인 + `작성 확인 사항` 패널
 - draft 편집기에서 선택 구간 기준 AI chat/apply 편집 루프
-- 평가항목 매핑 검증(누락 경고 + 강화 제안)
-- Export 미리보기 → 수정/다운로드(md/txt/docx/xlsx)
+- draft 편집기에서 바로 다운로드(md/txt)
 - 선택 영역 부분 수정 요청
 
 ## 5. 기술 스택
@@ -32,7 +30,7 @@
 - Backend: FastAPI (Python)
 - DB: SQLite (DATABASE_URL로 Postgres 전환 가능)
 - ORM/Migration: SQLAlchemy + Alembic
-- 문서 생성: python-docx, openpyxl
+- 산출물 다운로드: Markdown / Text
 
 ## 6. 설치 및 실행 방법
 ### 6.1 요구사항
@@ -59,6 +57,7 @@ npm install
 - OpenAI 키 입력 위치: `api/.env`의 `OPENAI_API_KEY=...`
 - OpenAI 연결 확인: `GET /api/health/openai`
 - 기본 OpenAI timeout은 `120초`이며, 필요 시 `OPENAI_TIMEOUT_SECONDS`로 조정한다
+- 최신 웹 검색 researcher 모델은 `OPENAI_MODEL_RESEARCH`로 분리하며 기본값은 `gpt-5-mini`다
 
 ### 6.4 실행
 ```bash
@@ -100,10 +99,10 @@ npm run build
 4. 자료 라이브러리에서 자료를 유형과 함께 업로드한다.
 5. 프로젝트 상세 페이지에서 필요한 자료를 체크해 연결한다.
 6. `Outline` 탭에서 상위/하위 구조와 제목을 정리하면 번호가 자동 계산된 목차를 저장한다.
-7. `Draft` 탭에서 RFP/연결 자료/목차 상태를 검토하고, section별 추천 근거를 포함/제외한 뒤 초안을 생성한다.
-8. 초안 편집기에서 본문을 저장하고, 선택 구간을 기준으로 AI와 대화하며 수정 제안을 적용한다.
-9. `Mapping` 탭에서 평가항목 매핑을 실행해 누락/약함 경고를 확인한다.
-10. `Export` 탭에서 산출물을 생성하고 미리보기/다운로드한다.
+7. `Draft` 탭에서 RFP/연결 자료/목차 상태를 검토한 뒤 초안을 생성한다.
+8. 초안 편집기에서 본문을 저장하고, 선택 구간의 `AI EDIT` 칩을 통해 AI와 대화하며 수정 제안을 적용한다.
+9. 우측 `작성 확인 사항` 패널에서 목차별 확인이 필요한 항목을 검토하고 해결 처리한다.
+10. `Draft` 탭에서 `다운로드` 버튼을 눌러 `md` 또는 `txt`로 바로 내려받는다.
 11. 선택 텍스트에 부분 수정 요청을 보내고, 제안문을 적용하거나 취소한다.
 
 ## 9. 문제 해결
@@ -111,7 +110,7 @@ npm run build
 - OpenAI 상태 확인: `GET /api/health/openai`에서 모델 접근 여부 확인
 - RFP 추출 실패: 스캔 PDF로 텍스트가 비어 있거나 OpenAI 호출이 timeout/실패했을 수 있음. 체크한 파일 수를 줄이거나 `OPENAI_TIMEOUT_SECONDS`를 늘려 다시 시도
 - 긴 PDF 비용 문제: 현재는 whole PDF를 통째로 보내지 않고, 로컬 chunk 저장 후 관련 chunk만 추출/초안 생성에 사용
-- 초안 생성 방식: section별 계획을 먼저 만들고, 선택된 요구사항/근거만 각 section prompt에 넣어 생성한다
+- 초안 생성 방식: 저장된 목차를 기준으로 planner가 섹션 계획을 만들고, writer/researcher/reviewer가 섹션별로 순차 실행된다. researcher는 OpenAI `Responses API + web_search`를 사용하고, 최신성 판단은 절대 날짜 기준으로 수행한다
 - 프롬프트 수정 위치: `api/app/services/rfp_prompts.py`
 - chat/apply 적용 실패: 선택 문장이 이미 바뀌어 서버와 mismatch일 수 있음. 새 선택으로 다시 요청
 - API 연결 실패: `web/.env.local`의 `NEXT_PUBLIC_API_BASE_URL` 확인

@@ -6,7 +6,7 @@ from app.models.draft import DraftChatMessage, DraftSection
 from app.models.evaluation import EvaluationItem
 from app.models.rfp import RfpExtraction, RfpRequirementItem
 from app.services.llm_service import LLMConfigurationError, LLMResponseError, LLMService
-from app.services.retrieval_service import RetrievedChunk, format_retrieved_context
+from app.services.review_item_service import merge_review_texts, strip_inline_review_items
 
 CHAT_CONTEXT_WINDOW = 900
 
@@ -15,11 +15,11 @@ You are editing a Korean proposal draft with the user through a chat interface.
 
 Rules:
 - Respect the user's edit request exactly.
-- Use only information supported by the draft, structured RFP summary, and retrieved evidence.
+- Use only information supported by the draft and structured RFP summary.
 - If the user selected text, return replacement text only for the selected span, not the full draft.
 - If no text is selected, provide guidance only and leave `suggestion_text` empty with `apply_mode=advice_only`.
 - Do not invent numbers, certifications, customers, or performance claims.
-- If a requested fact is missing, mention that clearly and use `[확인 필요(시스템)]` in the suggestion when needed.
+- If a requested fact is missing, mention that clearly in `assistant_reply` and return the missing points in `system_review_items`. Do not include `[확인 필요(시스템)]` in `assistant_reply` or `suggestion_text`.
 - Keep the assistant reply concise and practical.
 """.strip()
 
@@ -33,6 +33,7 @@ class StructuredChatEdit(BaseModel):
     suggestion_text: str = ""
     apply_mode: str = Field(default="advice_only")
     diff_hint: str | None = None
+    system_review_items: list[str] = Field(default_factory=list)
 
 
 def _rfp_summary(
@@ -92,7 +93,6 @@ def build_chat_edit(
     evaluation_items: list[EvaluationItem],
     user_message: str,
     prior_messages: list[DraftChatMessage],
-    retrieved: list[RetrievedChunk],
     selection_start: int | None,
     selection_end: int | None,
 ) -> StructuredChatEdit:
@@ -102,7 +102,7 @@ def build_chat_edit(
         selection_end=selection_end,
     )
     try:
-        return llm_service.parse_chat_completion(
+        generated = llm_service.parse_chat_completion(
             model=llm_service.settings.openai_model_draft,
             system_prompt=CHAT_EDIT_SYSTEM_PROMPT,
             user_prompt=f"""
@@ -121,9 +121,6 @@ Draft excerpt:
 Selected text:
 {selected_text or 'No selection'}
 
-Retrieved evidence:
-{format_retrieved_context(retrieved, max_items=4)}
-
 User request:
 {user_message}
 
@@ -132,9 +129,25 @@ Return:
 - `suggestion_text`: replacement text for the selected span, or empty if no selection
 - `apply_mode`: `replace_selection` or `advice_only`
 - `diff_hint`: short note about what changed
+- `system_review_items`: missing facts or decisions that should be tracked outside the draft body
 """.strip(),
             response_format=StructuredChatEdit,
             max_completion_tokens=1600,
         )
     except (LLMConfigurationError, LLMResponseError) as exc:
         raise ChatEditError(str(exc)) from exc
+
+    assistant_reply, assistant_review_items = strip_inline_review_items(generated.assistant_reply.strip())
+    suggestion_text, suggestion_review_items = strip_inline_review_items(generated.suggestion_text.strip())
+
+    return StructuredChatEdit(
+        assistant_reply=assistant_reply or "수정 제안을 준비했습니다.",
+        suggestion_text=suggestion_text,
+        apply_mode=generated.apply_mode,
+        diff_hint=generated.diff_hint,
+        system_review_items=merge_review_texts(
+            generated.system_review_items,
+            assistant_review_items,
+            suggestion_review_items,
+        ),
+    )

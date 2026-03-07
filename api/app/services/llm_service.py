@@ -63,7 +63,7 @@ class LLMService:
         models = [
             self.settings.openai_model_extraction,
             self.settings.openai_model_draft,
-            self.settings.openai_model_mapping,
+            self.settings.openai_model_research,
         ]
         return tuple(dict.fromkeys(model.strip() for model in models if model.strip()))
 

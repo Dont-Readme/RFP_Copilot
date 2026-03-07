@@ -7,9 +7,7 @@ import type {
   DraftGenerateResult,
   DraftPlanResult,
   DraftSection,
-  ExportPreview,
   ExportSession,
-  MappingResult,
   LibraryAsset,
   OpenQuestion,
   OutlineSection,
@@ -324,23 +322,9 @@ export async function updateRfpExtraction(
   });
 }
 
-export async function getMapping(projectId: number): Promise<MappingResult> {
-  return request<MappingResult>(`/api/projects/${projectId}/mapping`);
-}
-
-export async function runMapping(projectId: number, payload?: { strategy: string }): Promise<MappingResult> {
-  return request<MappingResult>(`/api/projects/${projectId}/mapping/run`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(payload ?? { strategy: "rules" })
-  });
-}
-
 export async function createExportSession(
   projectId: number,
-  payload: { formats: Array<"md" | "txt" | "docx" | "xlsx"> }
+  payload: { formats: Array<"md" | "txt"> }
 ): Promise<ExportSession> {
   return request<ExportSession>(`/api/projects/${projectId}/export`, {
     method: "POST",
@@ -351,17 +335,10 @@ export async function createExportSession(
   });
 }
 
-export async function getExportPreview(
-  projectId: number,
-  exportSessionId: string
-): Promise<ExportPreview> {
-  return request<ExportPreview>(`/api/projects/${projectId}/export/${exportSessionId}/preview`);
-}
-
 export function buildExportDownloadUrl(
   projectId: number,
   exportSessionId: string,
-  format: string
+  format: "md" | "txt"
 ): string {
   return `${getApiBaseUrl()}/api/projects/${projectId}/export/${exportSessionId}/download?format=${encodeURIComponent(format)}`;
 }

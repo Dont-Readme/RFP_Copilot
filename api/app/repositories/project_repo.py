@@ -1,13 +1,18 @@
 from __future__ import annotations
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, inspect, select, text
 from sqlalchemy.orm import Session
 
-from app.models.draft import DraftChatMessage, DraftSection, OpenQuestion
+from app.models.draft import (
+    DraftChatMessage,
+    DraftSearchTask,
+    DraftSection,
+    DraftSectionPlan,
+    OpenQuestion,
+)
 from app.models.evaluation import EvaluationItem
 from app.models.export import ExportSession
 from app.models.library import ProjectAssetLink
-from app.models.mapping import EvalMapping, MappingWarning
 from app.models.outline import Citation, OutlineSection
 from app.models.project import Project
 from app.models.retrieval import DocumentChunk
@@ -39,6 +44,9 @@ def update_project(db: Session, project: Project, name: str) -> Project:
 
 
 def delete_project(db: Session, project: Project) -> None:
+    inspector = inspect(db.bind)
+    existing_tables = set(inspector.get_table_names())
+
     db.execute(delete(DocumentChunk).where(DocumentChunk.project_id == project.id))
     db.execute(delete(DraftChatMessage).where(DraftChatMessage.project_id == project.id))
     db.execute(delete(ProjectFile).where(ProjectFile.project_id == project.id))
@@ -46,11 +54,21 @@ def delete_project(db: Session, project: Project) -> None:
     db.execute(delete(RfpRequirementItem).where(RfpRequirementItem.project_id == project.id))
     db.execute(delete(Citation).where(Citation.project_id == project.id))
     db.execute(delete(OutlineSection).where(OutlineSection.project_id == project.id))
-    db.execute(delete(EvalMapping).where(EvalMapping.project_id == project.id))
-    db.execute(delete(MappingWarning).where(MappingWarning.project_id == project.id))
+    if "eval_mappings" in existing_tables:
+        db.execute(
+            text("DELETE FROM eval_mappings WHERE project_id = :project_id"),
+            {"project_id": project.id},
+        )
+    if "mapping_warnings" in existing_tables:
+        db.execute(
+            text("DELETE FROM mapping_warnings WHERE project_id = :project_id"),
+            {"project_id": project.id},
+        )
     db.execute(delete(EvaluationItem).where(EvaluationItem.project_id == project.id))
     db.execute(delete(ExportSession).where(ExportSession.project_id == project.id))
     db.execute(delete(ProjectAssetLink).where(ProjectAssetLink.project_id == project.id))
+    db.execute(delete(DraftSearchTask).where(DraftSearchTask.project_id == project.id))
+    db.execute(delete(DraftSectionPlan).where(DraftSectionPlan.project_id == project.id))
     db.execute(delete(OpenQuestion).where(OpenQuestion.project_id == project.id))
     db.execute(delete(DraftSection).where(DraftSection.project_id == project.id))
     db.delete(project)
