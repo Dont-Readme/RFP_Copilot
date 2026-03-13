@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from collections import defaultdict
+import re
+
 from sqlalchemy.orm import Session
 
 from app.models.evaluation import EvaluationItem
@@ -8,24 +11,28 @@ from app.models.outline import OutlineSection
 from app.models.project import Project
 from app.models.rfp import RfpExtraction, RfpRequirementItem
 from app.repositories.draft_repo import (
-    list_search_tasks,
     replace_section_plans,
-    update_search_task,
     update_section_plan_status,
 )
 from app.repositories.outline_repo import replace_citations_for_sections
-from app.services.draft_plan_service import DraftPlanResult, build_draft_plan
-from app.services.draft_service import generate_section_draft
-from app.services.fresh_search_service import FreshSearchError, build_fresh_search_query, run_fresh_search
-from app.services.llm_service import LLMService
-from app.services.review_item_service import (
-    ReviewItemPayload,
-    build_heading_text,
-    build_review_items_for_section,
-    infer_fallback_review_items,
-    merge_review_payloads,
+from app.services.asset_context_service import build_asset_text_index
+from app.services.draft_generation_taxonomy import (
+    default_required_aspects_for_pattern,
+    infer_unit_pattern,
 )
-from app.services.section_review_service import SectionReviewError, review_section
+from app.services.draft_plan_service import (
+    DraftGenerationUnit,
+    DraftPlanResult,
+)
+from app.services.draft_planner_v2_service import build_ai_draft_plan
+from app.services.draft_service import generate_section_draft
+from app.services.llm_service import LLMService
+from app.services.research_service import ResearchResult
+from app.services.review_item_service import build_heading_text
+
+
+def _compact(text: str) -> str:
+    return re.sub(r"\s+", "", text).strip().lower()
 
 
 def _plan_snapshots(plan: DraftPlanResult) -> list[dict]:
@@ -54,9 +61,13 @@ def _plan_snapshots(plan: DraftPlanResult) -> list[dict]:
                 "search_tasks": [
                     {
                         "topic": task.topic,
+                        "purpose": task.purpose,
                         "reason": task.reason,
                         "freshness_required": task.freshness_required,
                         "expected_output": task.expected_output,
+                        "allowed_domains": task.allowed_domains,
+                        "max_results": task.max_results,
+                        "source_stage": "planned",
                         "status": "pending",
                     }
                     for task in section_plan.search_tasks
@@ -67,95 +78,62 @@ def _plan_snapshots(plan: DraftPlanResult) -> list[dict]:
     return snapshots
 
 
-def _research_section(
+def _citations_from_research_results(
     *,
-    db: Session,
-    project_id: int,
     outline_section_id: int,
-    heading_text: str,
-) -> tuple[list[str], list[dict], list[ReviewItemPayload]]:
-    search_context: list[str] = []
+    results: list[ResearchResult],
+) -> list[dict]:
     citations: list[dict] = []
-    review_items: list[ReviewItemPayload] = []
-    tasks = list_search_tasks(db, project_id=project_id, outline_section_id=outline_section_id)
-    if not tasks:
-        replace_citations_for_sections(
-            db,
-            project_id=project_id,
-            section_ids=[outline_section_id],
-            citations=[],
-        )
-        return search_context, citations, review_items
-
-    update_section_plan_status(
-        db,
-        project_id=project_id,
-        outline_section_id=outline_section_id,
-        status="search_pending",
-    )
-
-    for task in tasks:
-        query_text, searched_on = build_fresh_search_query(task.topic)
-        update_search_task(
-            db,
-            task=task,
-            status="running",
-            query_text=query_text,
-            searched_on=searched_on,
-        )
-        try:
-            results = run_fresh_search(topic=task.topic)
-            update_search_task(
-                db,
-                task=task,
-                status="completed",
-                query_text=query_text,
-                searched_on=searched_on,
-            )
-        except FreshSearchError:
-            update_search_task(
-                db,
-                task=task,
-                status="failed",
-                query_text=query_text,
-                searched_on=searched_on,
-            )
-            review_items.append(
-                ReviewItemPayload(
-                    outline_section_id=outline_section_id,
-                    section_heading_text=heading_text,
-                    question_text=f"`{task.topic}` 최신 검색을 확인하지 못했습니다. 수동 확인이 필요합니다.",
-                    category="needs_fresh_search",
-                    severity="medium",
-                    source_agent="researcher",
-                )
-            )
-            continue
-
-        for result in results:
-            search_context.append(f"{result.source_title} ({result.searched_on}): {result.snippet}")
+    seen: set[tuple[str, str]] = set()
+    for result in results:
+        for citation in result.citations:
+            key = (citation.url, citation.snippet)
+            if key in seen:
+                continue
+            seen.add(key)
             citations.append(
                 {
                     "outline_section_id": outline_section_id,
-                    "source_title": result.source_title,
-                    "source_url": result.source_url,
-                    "snippet": f"[{result.searched_on}] {result.snippet}",
+                    "source_title": citation.title,
+                    "source_url": citation.url,
+                    "snippet": f"[{result.searched_on}] {citation.snippet}",
                 }
             )
+    return citations
 
-    replace_citations_for_sections(
-        db,
-        project_id=project_id,
-        section_ids=[outline_section_id],
-        citations=citations,
+
+def _default_unit(section: OutlineSection, section_goal: str, draft_guidance: str) -> DraftGenerationUnit:
+    heading_text = build_heading_text(section)
+    compact_heading = _compact(heading_text)
+    if any(keyword in compact_heading for keyword in ("배경", "현황", "환경", "시장")):
+        writing_mode = "background"
+    elif any(keyword in compact_heading for keyword in ("필요", "목적", "기대효과")):
+        writing_mode = "need"
+    elif any(keyword in compact_heading for keyword in ("전략", "추진", "방법론", "체계")):
+        writing_mode = "strategy"
+    elif any(keyword in compact_heading for keyword in ("운영", "품질", "보안", "유지보수")):
+        writing_mode = "operations"
+    elif any(keyword in compact_heading for keyword in ("회사", "실적", "특허", "역량", "소개")):
+        writing_mode = "evidence"
+    else:
+        writing_mode = "execution"
+    unit_pattern = infer_unit_pattern(
+        writing_mode=writing_mode,
+        heading_text=heading_text,
+        requirements=[],
     )
-    update_section_plan_status(
-        db,
-        project_id=project_id,
-        outline_section_id=outline_section_id,
-        status="research_complete",
+    return DraftGenerationUnit(
+        unit_key=f"section-{section.id}-default",
+        outline_section_id=section.id,
+        unit_title=heading_text,
+        section_heading_text=heading_text,
+        section_goal=section_goal,
+        unit_goal=section_goal,
+        writing_instruction=draft_guidance,
+        writing_mode=writing_mode,
+        unit_pattern=unit_pattern,
+        required_aspects=default_required_aspects_for_pattern(unit_pattern),
     )
-    return search_context, citations, review_items
 
 
 def run_draft_pipeline(
@@ -168,124 +146,113 @@ def run_draft_pipeline(
     evaluation_items: list[EvaluationItem],
     assets: list[LibraryAsset],
     llm_service: LLMService,
-) -> tuple[str, list[ReviewItemPayload], DraftPlanResult]:
-    plan_result = build_draft_plan(
+    asset_text_index: dict[int, list[str]] | None = None,
+    plan_result: DraftPlanResult | None = None,
+) -> tuple[str, list[object], DraftPlanResult]:
+    effective_asset_text_index = (
+        asset_text_index if asset_text_index is not None else build_asset_text_index(db, assets)
+    )
+    effective_plan_result = plan_result or build_ai_draft_plan(
+        llm_service=llm_service,
+        project_id=project.id,
         project_name=project.name,
+        author_intent="",
         sections=sections,
         extraction=extraction,
         requirements=requirements,
         evaluation_items=evaluation_items,
         assets=assets,
+        asset_text_index=effective_asset_text_index,
     )
     replace_section_plans(
         db,
         project_id=project.id,
-        plans=_plan_snapshots(plan_result),
+        plans=_plan_snapshots(effective_plan_result),
     )
 
-    lines = [project.name]
-    collected_review_items: list[ReviewItemPayload] = []
+    requirement_by_id = {item.id: item for item in requirements}
+    evaluation_by_id = {item.id: item for item in evaluation_items}
+    units_by_section: dict[int, list[DraftGenerationUnit]] = defaultdict(list)
+    for unit in effective_plan_result.generation_units:
+        units_by_section[unit.outline_section_id].append(unit)
 
-    for section_plan in plan_result.sections:
-        heading_text = build_heading_text(section_plan.section)
+    lines = [project.name]
+    for section_plan in effective_plan_result.sections:
+        section = section_plan.section
+        heading_text = build_heading_text(section)
         update_section_plan_status(
             db,
             project_id=project.id,
-            outline_section_id=section_plan.section.id,
+            outline_section_id=section.id,
             status="drafting",
         )
 
-        search_context, _, research_review_items = _research_section(
-            db=db,
-            project_id=project.id,
-            outline_section_id=section_plan.section.id,
-            heading_text=heading_text,
-        )
-        collected_review_items.extend(research_review_items)
-
-        generated = generate_section_draft(
-            llm_service=llm_service,
-            project_name=project.name,
-            section=section_plan.section,
-            extraction=extraction,
-            section_goal=section_plan.section_goal,
-            draft_guidance=section_plan.draft_guidance,
-            requirements=section_plan.assigned_requirements,
-            evaluation_items=section_plan.assigned_evaluation_items,
-            company_facts=section_plan.assigned_company_facts,
-            search_context=search_context,
-        )
+        section_units = units_by_section.get(section.id) or [
+            _default_unit(section, section_plan.section_goal, section_plan.draft_guidance)
+        ]
+        section_citations: list[dict] = []
 
         lines.extend(["", heading_text])
-        if generated.content_md:
-            lines.append(generated.content_md)
 
-        writer_review_items = build_review_items_for_section(
-            outline_section_id=section_plan.section.id,
-            section_heading_text=heading_text,
-            item_texts=generated.system_review_items,
-            category="missing_evidence",
-            severity="medium",
-            source_agent="writer",
-        )
-        try:
-            reviewer_items = review_section(
-                llm_service=llm_service,
-                section=section_plan.section,
-                section_goal=section_plan.section_goal,
-                draft_guidance=section_plan.draft_guidance,
-                content_md=generated.content_md,
-                requirements=section_plan.assigned_requirements,
-                evaluation_items=section_plan.assigned_evaluation_items,
-                search_snippets=search_context,
+        for unit in section_units:
+            render_subheading = (
+                len(section_units) > 1 or _compact(unit.unit_title) != _compact(heading_text)
             )
-        except SectionReviewError:
-            reviewer_items = [
-                ReviewItemPayload(
-                    outline_section_id=section_plan.section.id,
-                    section_heading_text=heading_text,
-                    question_text="자동 검토에 실패했습니다. 이 섹션은 수동 확인이 필요합니다.",
-                    category="missing_evidence",
-                    severity="medium",
-                    source_agent="reviewer",
+            section_heading_text = (
+                f"{heading_text} / {unit.unit_title}" if render_subheading else heading_text
+            )
+
+            generated = generate_section_draft(
+                db=db,
+                llm_service=llm_service,
+                project_id=project.id,
+                project_name=project.name,
+                section=section,
+                unit_key=unit.unit_key,
+                extraction=extraction,
+                section_goal=unit.section_goal,
+                unit_title=unit.unit_title,
+                unit_goal=unit.unit_goal,
+                draft_guidance=unit.writing_instruction,
+                writing_mode=unit.writing_mode,
+                unit_pattern=unit.unit_pattern,
+                required_aspects=unit.required_aspects,
+                requirements=[
+                    requirement_by_id[requirement_id]
+                    for requirement_id in unit.primary_requirement_ids + unit.secondary_requirement_ids
+                    if requirement_id in requirement_by_id
+                ],
+                evaluation_items=[
+                    evaluation_by_id[evaluation_id]
+                    for evaluation_id in unit.evaluation_item_ids
+                    if evaluation_id in evaluation_by_id
+                ],
+                company_facts=unit.company_facts or section_plan.assigned_company_facts,
+                search_tasks=unit.search_tasks,
+            )
+            section_citations.extend(
+                _citations_from_research_results(
+                    outline_section_id=section.id,
+                    results=generated.research_results,
                 )
-            ]
+            )
 
-        fallback_items = build_review_items_for_section(
-            outline_section_id=section_plan.section.id,
-            section_heading_text=heading_text,
-            item_texts=infer_fallback_review_items(
-                section_heading_text=heading_text,
-                summary_text=extraction.project_summary_text,
-            ),
-            category="missing_evidence",
-            severity="medium",
-            source_agent="system",
+            if render_subheading:
+                lines.extend(["", f"#### {unit.unit_title}"])
+            if generated.content_md:
+                lines.append(generated.content_md)
+
+        replace_citations_for_sections(
+            db,
+            project_id=project.id,
+            section_ids=[section.id],
+            citations=section_citations,
         )
-
-        section_review_items = merge_review_payloads(
-            writer_review_items,
-            reviewer_items,
-            fallback_items,
-        )
-        if not generated.content_md and not section_review_items:
-            section_review_items = [
-                ReviewItemPayload(
-                    outline_section_id=section_plan.section.id,
-                    section_heading_text=heading_text,
-                    question_text="초안 생성 결과가 비어 있습니다.",
-                    category="unclear_scope",
-                    severity="high",
-                    source_agent="writer",
-                )
-            ]
-
-        collected_review_items.extend(section_review_items)
         update_section_plan_status(
             db,
             project_id=project.id,
-            outline_section_id=section_plan.section.id,
+            outline_section_id=section.id,
             status="done",
         )
 
-    return "\n".join(lines).strip() + "\n", merge_review_payloads(collected_review_items), plan_result
+    return "\n".join(lines).strip() + "\n", [], effective_plan_result

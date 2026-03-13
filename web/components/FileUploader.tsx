@@ -47,7 +47,7 @@ export function FileUploader({ onUploaded, onUpload }: FileUploaderProps) {
 
   return (
     <form className="upload-shell" onSubmit={handleSubmit}>
-      <p className="eyebrow">Upload Placeholder</p>
+      <p className="eyebrow">자료 업로드</p>
       <h2 className="card-title">라이브러리 업로드</h2>
       <p className="card-copy">
         카테고리와 제목을 지정한 뒤 파일을 업로드합니다. 업로드된 항목은 프로젝트 화면에서

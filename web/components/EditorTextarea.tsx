@@ -23,6 +23,16 @@ type EditorTextareaProps = {
   onCommitSelection: (selection: EditorSelection) => void;
 };
 
+function formatDraftStatus(status: string): string {
+  if (status === "draft") {
+    return "작성 중";
+  }
+  if (status === "confirmed") {
+    return "확정됨";
+  }
+  return status;
+}
+
 function hasSelection(selection: EditorSelection): boolean {
   return selection.start !== selection.end && selection.text.length > 0;
 }
@@ -157,10 +167,10 @@ export function EditorTextarea({
   return (
     <section className="editor-shell">
       <div className="editor-box">
-        <p className="eyebrow">Draft Editor</p>
+        <p className="eyebrow">초안 편집기</p>
         <div className="status-row" style={{ marginTop: 0, marginBottom: 12 }}>
           <span className="status-pill ok">{title}</span>
-          <span className="status-pill">{status}</span>
+          <span className="status-pill">{formatDraftStatus(status)}</span>
         </div>
         <div className="editor-input-shell">
           <textarea
@@ -192,7 +202,7 @@ export function EditorTextarea({
           style={{ left: chipPosition.left, top: chipPosition.top, position: "fixed" }}
           type="button"
         >
-          AI EDIT
+          AI 편집
         </button>
       ) : null}
     </section>

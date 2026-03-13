@@ -17,7 +17,7 @@ export default async function LibraryPage() {
   return (
     <main className="page-shell">
       <section className="content-panel">
-        <p className="eyebrow">Library</p>
+        <p className="eyebrow">자료 라이브러리</p>
         <h1 className="card-title">자료 라이브러리</h1>
         <p className="page-copy">
           카테고리 지정 업로드와 자료 목록 확인을 여기서 처리합니다. 프로젝트 연결은 개별

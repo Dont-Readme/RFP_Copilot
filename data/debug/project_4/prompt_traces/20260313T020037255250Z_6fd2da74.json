@@ -1,0 +1,25 @@
+{
+  "id": "20260313T020037255250Z_6fd2da74",
+  "project_id": 4,
+  "trace_kind": "draft.research.adaptive",
+  "model": "gpt-5-mini",
+  "system_prompt": null,
+  "user_prompt": null,
+  "input_text": "오늘 날짜는 2026-03-13입니다.\n반드시 web search를 사용해서 아래 조사 요청에 답하세요.\n\n검색 질의:\n2024년 국내외 스마트농업 시장 규모 및 성장 전망\n\n검색 목적:\n스마트농업 시장 현황과 성장 전망을 파악하여 사업의 중요성과 시급성 부각에 활용\n\n검색 이유:\n시장 환경과 성장 방향을 구체적으로 제시하여 사업 필요성을 강화하기 위해 최신 시장 통계가 필요함\n\n원하는 산출 형태:\n초안 본문 구체화에 바로 사용할 최신 근거 요약\n\n추가 맥락:\nsection=1 사업 배경\n\n지침:\n- 최신성 판단은 반드시 위 절대 날짜를 기준으로 하세요.\n- 질의와 목적에 직접 필요한 사실만 남기고 주변 잡정보는 제외하세요.\n- 한국어로 작성하세요.\n- 출처 인용이 붙도록 작성하세요.\n- 가능하면 공신력 있는 공공·연구·전문기관 출처를 우선하세요.\n- 결과는 최대 5개의 핵심 bullet로 정리하되, 마지막에 한 줄 요약을 덧붙여도 됩니다.\n- 정보가 부족하면 억지로 채우지 말고 부족하다고 분명히 적으세요.",
+  "metadata": {
+    "query": "2024년 국내외 스마트농업 시장 규모 및 성장 전망",
+    "purpose": "스마트농업 시장 현황과 성장 전망을 파악하여 사업의 중요성과 시급성 부각에 활용",
+    "source_stage": "adaptive",
+    "allowed_domains": [
+      "kotra.or.kr",
+      "kised.or.kr"
+    ],
+    "max_results": 5,
+    "outline_section_id": 1,
+    "section_heading": "1 사업 배경",
+    "unit_title": "1 사업 배경",
+    "writing_mode": "background",
+    "unit_pattern": "policy_background"
+  },
+  "created_at": "2026-03-13T02:00:37.255307+00:00"
+}

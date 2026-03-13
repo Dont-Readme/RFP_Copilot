@@ -8,7 +8,12 @@ import {
   updateRfpExtraction,
   uploadRfpFile
 } from "@/lib/api";
-import type { ProjectFile, RfpExtraction } from "@/lib/types";
+import type {
+  ProjectFile,
+  RequirementSourceSelection,
+  RfpExtraction
+} from "@/lib/types";
+import { useUnsavedChangesGuard } from "@/hooks/useUnsavedChangesGuard";
 
 type RfpWorkspaceProps = {
   projectId: number;
@@ -25,6 +30,7 @@ const FILE_ROLE_OPTIONS: Array<{ value: ProjectFile["role"]; label: string }> = 
   { value: "notice", label: "공고문" },
   { value: "sow", label: "과업지시서" },
   { value: "rfp", label: "제안요청서" },
+  { value: "requirements", label: "요구사항정의서" },
   { value: "other", label: "기타" }
 ];
 
@@ -64,12 +70,46 @@ function createPendingUpload(file: File, role: ProjectFile["role"]): PendingUplo
   };
 }
 
+function formatExtractionStatus(status: RfpExtraction["status"]): string {
+  return status === "confirmed" ? "확정됨" : "임시 저장 상태";
+}
+
+function formatExtractionTextStatus(ocrRequired: boolean): string {
+  return ocrRequired ? "OCR 보완 가능" : "텍스트 추출 양호";
+}
+
+function buildSavedExtractionSnapshot(extraction: RfpExtraction): string {
+  return JSON.stringify({
+    status: extraction.status,
+    project_summary_text: extraction.project_summary_text,
+    requirement_sources: extraction.requirement_sources
+      .map((source) => ({
+        file_id: source.file_id,
+        page_from: source.page_from,
+        page_to: source.page_to
+      }))
+      .sort((left, right) => left.file_id - right.file_id),
+    requirements: extraction.requirements.map((item, index) => ({
+      sort_order: item.sort_order ?? index + 1,
+      requirement_no: item.requirement_no,
+      name: item.name,
+      definition: item.definition,
+      details: item.details
+    }))
+  });
+}
+
 export function RfpWorkspace({ projectId, initialExtraction }: RfpWorkspaceProps) {
   const [extraction, setExtraction] = useState<RfpExtraction>({
     ...initialExtraction,
     evaluation_items: []
   });
-  const [file, setFile] = useState<File | null>(null);
+  const [savedExtractionSnapshot, setSavedExtractionSnapshot] = useState(
+    buildSavedExtractionSnapshot({
+      ...initialExtraction,
+      evaluation_items: []
+    })
+  );
   const [role, setRole] = useState<ProjectFile["role"]>("notice");
   const [fileInputKey, setFileInputKey] = useState(0);
   const [pendingUploads, setPendingUploads] = useState<PendingUpload[]>([]);
@@ -85,6 +125,10 @@ export function RfpWorkspace({ projectId, initialExtraction }: RfpWorkspaceProps
   const [isSaving, setIsSaving] = useState(false);
   const [deletingFileId, setDeletingFileId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const hasUnsavedExtractionChanges =
+    buildSavedExtractionSnapshot(extraction) !== savedExtractionSnapshot;
+
+  useUnsavedChangesGuard(hasUnsavedExtractionChanges);
 
   useEffect(() => {
     const availableIds = extraction.files.map((uploadedFile) => uploadedFile.id);
@@ -106,6 +150,10 @@ export function RfpWorkspace({ projectId, initialExtraction }: RfpWorkspaceProps
       }
       return next;
     });
+    setExtraction((current) => ({
+      ...current,
+      requirement_sources: current.requirement_sources.filter((source) => availableIds.includes(source.file_id))
+    }));
   }, [extraction.files]);
 
   useEffect(() => {
@@ -131,17 +179,15 @@ export function RfpWorkspace({ projectId, initialExtraction }: RfpWorkspaceProps
   }, [isReextracting]);
 
   function resetFilePicker() {
-    setFile(null);
     setFileInputKey((current) => current + 1);
   }
 
-  function handleQueueAdd() {
-    if (!file) {
-      setError("대기 목록에 추가할 파일을 선택해 주세요.");
+  function handleFilePicked(nextFile: File | null) {
+    if (!nextFile) {
       return;
     }
 
-    setPendingUploads((current) => [...current, createPendingUpload(file, role)]);
+    setPendingUploads((current) => [...current, createPendingUpload(nextFile, role)]);
     setError(null);
     resetFilePicker();
   }
@@ -176,6 +222,7 @@ export function RfpWorkspace({ projectId, initialExtraction }: RfpWorkspaceProps
         const response = await uploadRfpFile(projectId, { file: item.file, role: item.role });
         completedIds.add(item.localId);
         setExtraction(response.extraction);
+        setSavedExtractionSnapshot(buildSavedExtractionSnapshot(response.extraction));
         setSelectedFileIds((current) =>
           current.includes(response.file.id) ? current : [...current, response.file.id]
         );
@@ -202,25 +249,29 @@ export function RfpWorkspace({ projectId, initialExtraction }: RfpWorkspaceProps
       setError(null);
       await deleteRfpFile(projectId, fileId);
       setSelectedFileIds((current) => current.filter((candidate) => candidate !== fileId));
-      setExtraction((current) => {
-        const nextFiles = current.files.filter((candidate) => candidate.id !== fileId);
-        if (nextFiles.length === 0) {
-          return {
-            ...current,
-            status: "draft",
-            raw_text: "",
-            project_summary_text: "",
-            ocr_required: false,
-            files: [],
-            requirements: [],
-            evaluation_items: []
-          };
-        }
-        return {
-          ...current,
-          files: nextFiles
-        };
-      });
+      const nextFiles = extraction.files.filter((candidate) => candidate.id !== fileId);
+      const nextExtraction =
+        nextFiles.length === 0
+          ? {
+              ...extraction,
+              status: "draft" as const,
+              raw_text: "",
+              project_summary_text: "",
+              ocr_required: false,
+              requirement_sources: [],
+              files: [],
+              requirements: [],
+              evaluation_items: []
+            }
+          : {
+              ...extraction,
+              files: nextFiles,
+              requirement_sources: extraction.requirement_sources.filter(
+                (source) => source.file_id !== fileId
+              )
+            };
+      setExtraction(nextExtraction);
+      setSavedExtractionSnapshot(buildSavedExtractionSnapshot(nextExtraction));
     } catch (deleteError) {
       setError(deleteError instanceof Error ? deleteError.message : "업로드 파일 삭제에 실패했습니다.");
     } finally {
@@ -238,12 +289,34 @@ export function RfpWorkspace({ projectId, initialExtraction }: RfpWorkspaceProps
       setError("추출에 사용할 업로드 파일을 하나 이상 체크해 주세요.");
       return;
     }
+    if (extraction.requirement_sources.length === 0) {
+      setError("요구사항 추출 소스 파일과 페이지 범위를 하나 이상 지정해 주세요.");
+      return;
+    }
+    for (const source of extraction.requirement_sources) {
+      if (!selectedFileIds.includes(source.file_id)) {
+        setError("요구사항 소스 파일은 추출 대상 파일에도 포함되어야 합니다.");
+        return;
+      }
+      if (
+        source.page_from !== null &&
+        source.page_to !== null &&
+        source.page_from > source.page_to
+      ) {
+        setError("요구사항 소스의 시작 페이지는 끝 페이지보다 클 수 없습니다.");
+        return;
+      }
+    }
 
     try {
       setIsReextracting(true);
       setError(null);
-      const updated = await rerunRfpExtraction(projectId, { file_ids: selectedFileIds });
+      const updated = await rerunRfpExtraction(projectId, {
+        file_ids: selectedFileIds,
+        requirement_sources: extraction.requirement_sources
+      });
       setExtraction(updated);
+      setSavedExtractionSnapshot(buildSavedExtractionSnapshot(updated));
     } catch (extractError) {
       setError(extractError instanceof Error ? extractError.message : "RFP 재추출에 실패했습니다.");
     } finally {
@@ -260,6 +333,7 @@ export function RfpWorkspace({ projectId, initialExtraction }: RfpWorkspaceProps
         status: nextStatus
       });
       setExtraction(updated);
+      setSavedExtractionSnapshot(buildSavedExtractionSnapshot(updated));
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : "추출 결과 저장에 실패했습니다.");
     } finally {
@@ -268,11 +342,62 @@ export function RfpWorkspace({ projectId, initialExtraction }: RfpWorkspaceProps
   }
 
   function toggleUploadedFile(fileId: number) {
+    const willUnselect = selectedFileIds.includes(fileId);
     setSelectedFileIds((current) =>
       current.includes(fileId)
         ? current.filter((candidate) => candidate !== fileId)
         : [...current, fileId]
     );
+    if (willUnselect) {
+      setExtraction((current) => ({
+        ...current,
+        requirement_sources: current.requirement_sources.filter((source) => source.file_id !== fileId)
+      }));
+    }
+  }
+
+  function getRequirementSource(fileId: number): RequirementSourceSelection | undefined {
+    return extraction.requirement_sources.find((source) => source.file_id === fileId);
+  }
+
+  function toggleRequirementSource(fileId: number) {
+    const existingSource = getRequirementSource(fileId);
+    if (existingSource) {
+      setExtraction((current) => ({
+        ...current,
+        requirement_sources: current.requirement_sources.filter((source) => source.file_id !== fileId)
+      }));
+      return;
+    }
+
+    setExtraction((current) => ({
+      ...current,
+      requirement_sources: [
+        ...current.requirement_sources,
+        {
+          file_id: fileId,
+          page_from: null,
+          page_to: null
+        }
+      ]
+    }));
+    setSelectedFileIds((current) => (current.includes(fileId) ? current : [...current, fileId]));
+  }
+
+  function updateRequirementSourceRange(
+    fileId: number,
+    field: "page_from" | "page_to",
+    rawValue: string
+  ) {
+    const parsedValue = rawValue ? Math.trunc(Number(rawValue)) : null;
+    const nextValue =
+      parsedValue !== null && Number.isFinite(parsedValue) && parsedValue >= 1 ? parsedValue : null;
+    setExtraction((current) => ({
+      ...current,
+      requirement_sources: current.requirement_sources.map((source) =>
+        source.file_id === fileId ? { ...source, [field]: Number.isNaN(nextValue) ? null : nextValue } : source
+      )
+    }));
   }
 
   function updateRequirement(
@@ -325,12 +450,13 @@ export function RfpWorkspace({ projectId, initialExtraction }: RfpWorkspaceProps
       ) : null}
 
       <section className="content-panel">
-        <p className="eyebrow">Upload</p>
+        <p className="eyebrow">파일 업로드</p>
         <h2 className="card-title">공고 파일 업로드</h2>
         <p className="page-copy">
           파일 유형을 선택한 뒤 대기 목록에 쌓고, 한 번에 업로드한 다음 추출에 사용할 파일만 체크해
-          OpenAI 추출을 실행합니다. 추출 프롬프트는 `api/app/services/rfp_prompts.py`에서
-          섹션별로 수정할 수 있습니다.
+          OpenAI 추출을 실행합니다. 요구사항만 별도 정리된 문서가 있다면 `요구사항정의서` 유형으로
+          올리는 편이 더 정확합니다. 프롬프트는 `api/app/services/prompts/` 아래 파일에서 기능별로
+          수정할 수 있습니다.
         </p>
 
         <div className="rfp-upload-grid">
@@ -344,32 +470,27 @@ export function RfpWorkspace({ projectId, initialExtraction }: RfpWorkspaceProps
               ))}
             </select>
           </label>
-          <label className="secondary-button" htmlFor="rfp-file-upload">
+          <label className="button" htmlFor="rfp-file-upload">
             파일 선택
           </label>
           <input
             key={fileInputKey}
             hidden
             id="rfp-file-upload"
-            onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+            onChange={(event) => handleFilePicked(event.target.files?.[0] ?? null)}
             type="file"
           />
-          <button
-            className="button"
-            disabled={!file || isUploading}
-            onClick={handleQueueAdd}
-            type="button"
-          >
-            리스트에 추가
-          </button>
         </div>
+        <p className="page-copy">
+          파일을 선택하면 현재 선택된 유형으로 업로드 대기 목록에 바로 추가됩니다.
+        </p>
 
-        {file ? <p className="page-copy">선택 파일: {file.name}</p> : null}
+        <div className="rfp-upload-divider" />
 
         <div className="rfp-upload-subsection section-spacer">
           <div className="toolbar">
             <div>
-              <p className="eyebrow">Pending Queue</p>
+              <p className="eyebrow">업로드 대기</p>
               <h3 className="card-title">업로드 대기 목록</h3>
               <p className="page-copy">아래 목록을 확인한 뒤 한 번에 업로드하세요.</p>
             </div>
@@ -443,10 +564,12 @@ export function RfpWorkspace({ projectId, initialExtraction }: RfpWorkspaceProps
         <div className="rfp-upload-subsection section-spacer">
           <div className="toolbar">
             <div>
-              <p className="eyebrow">Uploaded Files</p>
+              <p className="eyebrow">업로드 완료 파일</p>
               <h3 className="card-title">업로드 완료 파일</h3>
               <p className="page-copy">
-                체크한 파일만 추출에 사용됩니다. 긴 문서일수록 선택 범위를 줄이는 편이 더 안정적입니다.
+                체크한 파일만 추출에 사용됩니다. 각 파일 카드에서 `요구사항 소스로 사용`을 켜고 필요한
+                페이지 범위를 입력하면, 요구사항은 그 범위만 사용합니다. 요구사항 소스로 켜면 추출 대상에도
+                자동 포함됩니다.
               </p>
             </div>
             <div className="action-row">
@@ -472,7 +595,8 @@ export function RfpWorkspace({ projectId, initialExtraction }: RfpWorkspaceProps
                   isReextracting ||
                   isUploading ||
                   extraction.files.length === 0 ||
-                  selectedFileIds.length === 0
+                  selectedFileIds.length === 0 ||
+                  extraction.requirement_sources.length === 0
                 }
                 onClick={() => void handleReextract()}
                 type="button"
@@ -498,13 +622,16 @@ export function RfpWorkspace({ projectId, initialExtraction }: RfpWorkspaceProps
 
           <div className="status-row">
             <span className={`status-pill ${extraction.status === "confirmed" ? "ok" : "warn"}`}>
-              {extraction.status}
+              {formatExtractionStatus(extraction.status)}
             </span>
             <span className={`status-pill ${extraction.ocr_required ? "warn" : "ok"}`}>
-              {extraction.ocr_required ? "OCR optional" : "Text extraction ok"}
+              {formatExtractionTextStatus(extraction.ocr_required)}
             </span>
             <span className="status-pill">
               추출 선택 {selectedFileIds.length}/{extraction.files.length}
+            </span>
+            <span className="status-pill">
+              요구사항 소스 {extraction.requirement_sources.length}개
             </span>
           </div>
 
@@ -514,33 +641,92 @@ export function RfpWorkspace({ projectId, initialExtraction }: RfpWorkspaceProps
             ) : (
               extraction.files.map((uploadedFile) => {
                 const checked = selectedFileIds.includes(uploadedFile.id);
+                const requirementSource = getRequirementSource(uploadedFile.id);
+                const isSource = Boolean(requirementSource);
                 return (
                   <article
                     key={uploadedFile.id}
-                    className={`mini-card rfp-file-card ${checked ? "rfp-file-card-selected" : ""}`}
+                    className={`mini-card rfp-file-card ${checked ? "rfp-file-card-selected" : ""} ${
+                      isSource ? "rfp-file-card-source" : ""
+                    }`}
                   >
-                    <div className="rfp-file-main">
-                      <input
-                        checked={checked}
-                        className="checkbox-input"
-                        onChange={() => toggleUploadedFile(uploadedFile.id)}
-                        type="checkbox"
-                      />
-                      <div className="rfp-file-meta">
-                        <h3>{uploadedFile.filename}</h3>
-                        <p className="card-copy">
-                          {formatFileRole(uploadedFile.role)} · {formatBytes(uploadedFile.size)}
-                        </p>
+                    <div className="rfp-file-card-body">
+                      <div className="rfp-file-card-topline">
+                        <div className="rfp-file-main">
+                          <input
+                            checked={checked}
+                            className="checkbox-input"
+                            onChange={() => toggleUploadedFile(uploadedFile.id)}
+                            type="checkbox"
+                          />
+                          <div className="rfp-file-meta">
+                            <div className="rfp-file-heading-row">
+                              <h3>{uploadedFile.filename}</h3>
+                              <div className="rfp-file-pill-row">
+                                <span className={`status-pill ${checked ? "ok" : "warn"}`}>
+                                  {checked ? "추출 포함" : "추출 제외"}
+                                </span>
+                                {isSource ? <span className="status-pill ok">요구사항 소스</span> : null}
+                              </div>
+                            </div>
+                            <p className="card-copy">
+                              {formatFileRole(uploadedFile.role)} · {formatBytes(uploadedFile.size)}
+                            </p>
+                          </div>
+                        </div>
+                        <button
+                          className="button"
+                          disabled={deletingFileId === uploadedFile.id}
+                          onClick={() => void handleDeleteFile(uploadedFile.id)}
+                          type="button"
+                        >
+                          {deletingFileId === uploadedFile.id ? "삭제 중..." : "삭제"}
+                        </button>
+                      </div>
+
+                      <div className="rfp-file-source-row">
+                        <label className="rfp-source-toggle">
+                          <input
+                            checked={isSource}
+                            onChange={() => toggleRequirementSource(uploadedFile.id)}
+                            type="checkbox"
+                          />
+                          <span>요구사항 소스로 사용</span>
+                        </label>
+                        {isSource ? (
+                          <div className="rfp-source-range-grid">
+                            <label className="field">
+                              <span>시작 페이지</span>
+                              <input
+                                min={1}
+                                step={1}
+                                onChange={(event) =>
+                                  updateRequirementSourceRange(uploadedFile.id, "page_from", event.target.value)
+                                }
+                                placeholder="전체"
+                                type="number"
+                                value={requirementSource?.page_from ?? ""}
+                              />
+                            </label>
+                            <label className="field">
+                              <span>끝 페이지</span>
+                              <input
+                                min={1}
+                                step={1}
+                                onChange={(event) =>
+                                  updateRequirementSourceRange(uploadedFile.id, "page_to", event.target.value)
+                                }
+                                placeholder="전체"
+                                type="number"
+                                value={requirementSource?.page_to ?? ""}
+                              />
+                            </label>
+                          </div>
+                        ) : (
+                          <p className="subtle-copy">비활성화 시 이 파일은 사업 개요용 참고 문맥으로만 사용됩니다.</p>
+                        )}
                       </div>
                     </div>
-                    <button
-                      className="secondary-button"
-                      disabled={deletingFileId === uploadedFile.id}
-                      onClick={() => void handleDeleteFile(uploadedFile.id)}
-                      type="button"
-                    >
-                      {deletingFileId === uploadedFile.id ? "삭제 중..." : "삭제"}
-                    </button>
                   </article>
                 );
               })
@@ -550,7 +736,7 @@ export function RfpWorkspace({ projectId, initialExtraction }: RfpWorkspaceProps
       </section>
 
       <section className="content-panel">
-        <p className="eyebrow">Project Summary</p>
+        <p className="eyebrow">사업 개요</p>
         <h2 className="card-title">사업 개요</h2>
         <textarea
           className="input-textarea input-textarea-lg rfp-summary-textarea"
@@ -567,15 +753,14 @@ export function RfpWorkspace({ projectId, initialExtraction }: RfpWorkspaceProps
       <section className="content-panel">
         <div className="toolbar">
           <div>
-            <p className="eyebrow">Requirements</p>
+            <p className="eyebrow">요구사항</p>
             <h2 className="card-title">요구사항</h2>
             <p className="page-copy">
               요구사항 번호가 없는 문서도 있으므로 빈 칸을 허용합니다. 추출 품질이 낮으면 직접
-              행을 추가하거나 수정하세요. `세부 내용`은 여러 항목이 있으면 마크다운 bullet 형태로
-              정리됩니다.
+              행을 추가하거나 수정하세요. `세부 내용`은 원문 줄바꿈과 불릿 계층을 최대한 유지합니다.
             </p>
           </div>
-          <button className="secondary-button" onClick={addRequirementRow} type="button">
+          <button className="button" onClick={addRequirementRow} type="button">
             요구사항 행 추가
           </button>
         </div>
@@ -631,7 +816,7 @@ export function RfpWorkspace({ projectId, initialExtraction }: RfpWorkspaceProps
                     </td>
                     <td>
                       <button
-                        className="secondary-button"
+                        className="button"
                         onClick={() => removeRequirementRow(index)}
                         type="button"
                       >
@@ -647,7 +832,7 @@ export function RfpWorkspace({ projectId, initialExtraction }: RfpWorkspaceProps
       </section>
 
       <section className="content-panel">
-        <p className="eyebrow">Review Actions</p>
+        <p className="eyebrow">저장 및 확정</p>
         <h2 className="card-title">페이지 전체 저장 및 확정</h2>
         <p className="page-copy">
           아래 버튼은 사업 개요와 요구사항 전체 수정 결과에 적용됩니다.

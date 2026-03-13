@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from typing import Annotated
 
@@ -30,6 +31,7 @@ from app.schemas.rfp import (
     RfpFileRole,
     RfpFileUploadResponse,
     RfpRequirementItemRead,
+    RequirementSourceSelection,
 )
 from app.services.chunking_service import ensure_project_file_chunks
 from app.services.library_service import save_upload_file
@@ -73,6 +75,7 @@ def _build_rfp_response(db: Session, project_id: int) -> RfpExtractionRead:
         project_summary_text=extraction.project_summary_text,
         ocr_required=extraction.ocr_required,
         updated_at=extraction.updated_at,
+        requirement_sources=_parse_requirement_sources(extraction.source_file_path),
         files=[ProjectFileRead.model_validate(project_file) for project_file in files],
         requirements=[RfpRequirementItemRead.model_validate(item) for item in requirements],
         evaluation_items=[
@@ -131,20 +134,110 @@ def _build_extraction_bundles_for_files(
     return bundles
 
 
+def _parse_requirement_sources(raw_value: str | None) -> list[RequirementSourceSelection]:
+    if not raw_value:
+        return []
+    try:
+        payload = json.loads(raw_value)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(payload, list):
+        return []
+
+    parsed: list[RequirementSourceSelection] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        try:
+            parsed.append(RequirementSourceSelection.model_validate(item))
+        except Exception:
+            continue
+    return parsed
+
+
+def _serialize_requirement_sources(
+    sources: list[RequirementSourceSelection],
+) -> str | None:
+    if not sources:
+        return None
+    return json.dumps([source.model_dump() for source in sources], ensure_ascii=False)
+
+
+def _filter_chunks_for_page_range(
+    chunks: list[dict],
+    *,
+    page_from: int | None,
+    page_to: int | None,
+) -> list[dict]:
+    filtered: list[dict] = []
+    for chunk in chunks:
+        page_start = chunk.get("page_start")
+        page_end = chunk.get("page_end") or page_start
+        if page_from is not None and page_start is not None and page_end is not None and page_end < page_from:
+            continue
+        if page_to is not None and page_start is not None and page_start > page_to:
+            continue
+        filtered.append(chunk)
+    return filtered
+
+
+def _build_requirement_source_bundles(
+    bundles: list[FileChunkBundle],
+    requirement_sources: list[RequirementSourceSelection],
+) -> list[FileChunkBundle]:
+    bundle_lookup = {bundle.project_file.id: bundle for bundle in bundles}
+    filtered_bundles: list[FileChunkBundle] = []
+    for source in requirement_sources:
+        bundle = bundle_lookup.get(source.file_id)
+        if bundle is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"선택한 요구사항 소스 파일을 추출 대상에서 찾을 수 없습니다: {source.file_id}",
+            )
+        filtered_chunks = _filter_chunks_for_page_range(
+            bundle.chunks,
+            page_from=source.page_from,
+            page_to=source.page_to,
+        )
+        if not filtered_chunks:
+            range_label = f"{source.page_from or 1}~{source.page_to or 'end'}"
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"{bundle.project_file.filename}에서 선택한 페이지 범위({range_label})에 해당하는 텍스트가 없습니다.",
+            )
+        filtered_bundles.append(
+            FileChunkBundle(
+                project_file=bundle.project_file,
+                raw_text="\n\n".join(chunk["text_content"] for chunk in filtered_chunks).strip(),
+                chunks=filtered_chunks,
+            )
+        )
+    return filtered_bundles
+
+
 def _extract_and_store_rfp(
     db: Session,
     *,
     project_id: int,
     llm_service: LLMService,
     file_ids: list[int] | None = None,
+    requirement_sources: list[RequirementSourceSelection] | None = None,
 ) -> RfpExtractionRead:
     bundles = _build_extraction_bundles_for_files(db, project_id, file_ids)
     if not bundles:
         raise HTTPException(status_code=404, detail="No RFP files have been uploaded yet")
+    normalized_requirement_sources = requirement_sources or []
+    if not normalized_requirement_sources:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="요구사항 추출 소스 파일과 페이지 범위를 하나 이상 지정해 주세요.",
+        )
+    requirement_bundles = _build_requirement_source_bundles(bundles, normalized_requirement_sources)
 
     try:
         payload, requirements, _ = extract_rfp_payload(
             bundles=bundles,
+            requirement_bundles=requirement_bundles,
             llm_service=llm_service,
         )
     except RfpExtractionError as exc:
@@ -153,7 +246,14 @@ def _extract_and_store_rfp(
             detail=f"OpenAI extraction failed: {exc}",
         ) from exc
 
-    update_rfp_extraction(db, project_id, payload)
+    update_rfp_extraction(
+        db,
+        project_id,
+        {
+            **payload,
+            "source_file_path": _serialize_requirement_sources(normalized_requirement_sources),
+        },
+    )
     replace_requirement_items(db, project_id, requirements)
     replace_evaluation_items(
         db,
@@ -235,7 +335,8 @@ async def delete_rfp_file_endpoint(
     delete_document_chunks(db, document_kind="rfp", document_id=project_file.id)
     delete_project_file(db, project_file)
     _delete_uploaded_file(relative_path)
-    if not list_project_files(db, project_id):
+    remaining_files = list_project_files(db, project_id)
+    if not remaining_files:
         update_rfp_extraction(
             db,
             project_id,
@@ -256,6 +357,20 @@ async def delete_rfp_file_endpoint(
         )
         replace_requirement_items(db, project_id, [])
         replace_evaluation_items(db, project_id, [])
+        return
+
+    remaining_file_ids = {remaining_file.id for remaining_file in remaining_files}
+    current_sources = _parse_requirement_sources(ensure_rfp_extraction(db, project_id).source_file_path)
+    pruned_sources = [
+        source for source in current_sources if source.file_id in remaining_file_ids
+    ]
+    update_rfp_extraction(
+        db,
+        project_id,
+        {
+            "source_file_path": _serialize_requirement_sources(pruned_sources),
+        },
+    )
 
 
 @router.get("/projects/{project_id}/rfp/extraction", response_model=RfpExtractionRead)
@@ -279,11 +394,18 @@ async def rerun_rfp_extraction(
     project = get_project(db, project_id)
     if project is None:
         raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+    stored_requirement_sources = _parse_requirement_sources(ensure_rfp_extraction(db, project_id).source_file_path)
+    effective_requirement_sources = (
+        payload.requirement_sources
+        if payload is not None and payload.requirement_sources
+        else stored_requirement_sources
+    )
     return _extract_and_store_rfp(
         db,
         project_id=project_id,
         llm_service=llm_service,
         file_ids=payload.file_ids if payload is not None else None,
+        requirement_sources=effective_requirement_sources,
     )
 
 
@@ -305,6 +427,7 @@ async def update_rfp_extraction_endpoint(
             "raw_text": payload.raw_text,
             "project_summary_text": payload.project_summary_text,
             "ocr_required": payload.ocr_required,
+            "source_file_path": _serialize_requirement_sources(payload.requirement_sources),
         },
     )
     replace_requirement_items(

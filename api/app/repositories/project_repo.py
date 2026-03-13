@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.models.draft import (
     DraftChatMessage,
+    DraftPlanningConfig,
     DraftSearchTask,
     DraftSection,
     DraftSectionPlan,
@@ -69,6 +70,7 @@ def delete_project(db: Session, project: Project) -> None:
     db.execute(delete(ProjectAssetLink).where(ProjectAssetLink.project_id == project.id))
     db.execute(delete(DraftSearchTask).where(DraftSearchTask.project_id == project.id))
     db.execute(delete(DraftSectionPlan).where(DraftSectionPlan.project_id == project.id))
+    db.execute(delete(DraftPlanningConfig).where(DraftPlanningConfig.project_id == project.id))
     db.execute(delete(OpenQuestion).where(OpenQuestion.project_id == project.id))
     db.execute(delete(DraftSection).where(DraftSection.project_id == project.id))
     db.delete(project)

@@ -29,17 +29,15 @@ def build_preview_markdown(
 
     lines.extend(["## Draft", draft_content.strip(), ""])
 
-    lines.append("## 작성 확인 사항")
     if questions:
+        lines.append("## 작성 확인 사항")
         lines.extend(
             [
                 f"- [{question['status']}] {question.get('section_heading_text', '').strip() or '목차 미상'}: {question['question_text']}"
                 for question in questions
             ]
         )
-    else:
-        lines.append("- 없음")
-    lines.append("")
+        lines.append("")
     return "\n".join(lines).strip() + "\n"
 
 

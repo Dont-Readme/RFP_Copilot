@@ -18,7 +18,7 @@ class ReviewItemPayload(BaseModel):
     question_text: str
     category: str = "missing_evidence"
     severity: str = "medium"
-    source_agent: str = "reviewer"
+    source_agent: str = "system"
 
 
 FALLBACK_REVIEW_RULES = (
@@ -131,7 +131,7 @@ def build_review_items_for_section(
     item_texts: list[str],
     category: str = "missing_evidence",
     severity: str = "medium",
-    source_agent: str = "reviewer",
+    source_agent: str = "system",
 ) -> list[ReviewItemPayload]:
     return [
         ReviewItemPayload(
@@ -167,7 +167,7 @@ def merge_review_payloads(*groups: list[ReviewItemPayload]) -> list[ReviewItemPa
                     question_text=normalized_text,
                     category=item.category.strip() or "missing_evidence",
                     severity=item.severity.strip() or "medium",
-                    source_agent=item.source_agent.strip() or "reviewer",
+                    source_agent=item.source_agent.strip() or "system",
                 )
             )
     return merged

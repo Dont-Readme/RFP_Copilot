@@ -50,7 +50,7 @@ export function LibraryManager({ initialAssets }: LibraryManagerProps) {
       <section className="content-panel section-spacer">
         <div className="toolbar">
           <div>
-            <p className="eyebrow">Asset List</p>
+            <p className="eyebrow">자료 목록</p>
             <h2 className="card-title">업로드된 자료</h2>
           </div>
           <div className="action-row">

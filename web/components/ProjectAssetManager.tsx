@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useMemo, useState } from "react";
 
 import { syncProjectAssets } from "@/lib/api";
@@ -45,12 +46,15 @@ export function ProjectAssetManager({
     <section className="content-panel">
       <div className="toolbar">
         <div>
-          <p className="eyebrow">Project Assets</p>
+          <p className="eyebrow">프로젝트 자료</p>
           <h2 className="card-title">프로젝트 연결 자료</h2>
           <p className="page-copy">체크 상태를 저장하면 현재 프로젝트의 연결 목록을 동기화합니다.</p>
         </div>
         <div className="status-row">
-          <span className="status-pill ok">{selectedCount} linked</span>
+          <span className="status-pill ok">연결 {selectedCount}건</span>
+          <Link className="secondary-button" href="/library">
+            자료 라이브러리
+          </Link>
         </div>
       </div>
 

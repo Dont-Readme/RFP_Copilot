@@ -3,6 +3,7 @@
 import { useState } from "react";
 
 import { saveOutline } from "@/lib/api";
+import { useUnsavedChangesGuard } from "@/hooks/useUnsavedChangesGuard";
 import type { OutlineSection } from "@/lib/types";
 
 type OutlineManagerProps = {
@@ -67,11 +68,30 @@ function renderPreview(row: OutlineRow) {
   return `${row.display_label} ${row.title}`.trim();
 }
 
+function buildSavedOutlineSnapshot(rows: OutlineRow[]): string {
+  return JSON.stringify(
+    normalizeRows(rows).map((row, index) => ({
+      id: row.id ?? null,
+      sort_order: index + 1,
+      depth: row.depth,
+      display_label: row.display_label,
+      title: row.title.trim()
+    }))
+  );
+}
+
 export function OutlineManager({ projectId, initialSections }: OutlineManagerProps) {
   const [sections, setSections] = useState<OutlineRow[]>(normalizeRows(toRows(initialSections)));
+  const [savedOutlineSnapshot, setSavedOutlineSnapshot] = useState(
+    buildSavedOutlineSnapshot(toRows(initialSections))
+  );
   const [busyAction, setBusyAction] = useState<"save" | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const hasUnsavedOutlineChanges =
+    buildSavedOutlineSnapshot(sections) !== savedOutlineSnapshot;
+
+  useUnsavedChangesGuard(hasUnsavedOutlineChanges);
 
   function updateRow(localId: string, patch: Partial<OutlineRow>) {
     setSections((current) =>
@@ -176,6 +196,7 @@ export function OutlineManager({ projectId, initialSections }: OutlineManagerPro
         }))
       });
       setSections(normalizeRows(toRows(saved)));
+      setSavedOutlineSnapshot(buildSavedOutlineSnapshot(toRows(saved)));
       setMessage("목차를 저장했습니다.");
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : "목차 저장에 실패했습니다.");
@@ -189,15 +210,15 @@ export function OutlineManager({ projectId, initialSections }: OutlineManagerPro
       <section className="content-panel">
         <div className="toolbar">
           <div>
-            <p className="eyebrow">Outline Builder</p>
+            <p className="eyebrow">목차 편집</p>
             <h2 className="card-title">목차 구조 정의</h2>
             <p className="page-copy">
               이 화면에서는 상위/하위 목차와 제목만 정의합니다. 번호는 depth와 순서에 따라 자동으로
-              계산되며, 초안 생성은 Draft Workspace에서 진행합니다.
+              계산되며, 초안 생성은 초안 작성 화면에서 진행합니다.
             </p>
           </div>
           <div className="status-row">
-            <span className="status-pill ok">{sections.length} sections</span>
+            <span className="status-pill ok">목차 {sections.length}개</span>
             <span className="status-pill">번호 자동 계산</span>
           </div>
         </div>
@@ -231,7 +252,7 @@ export function OutlineManager({ projectId, initialSections }: OutlineManagerPro
                     <div className="outline-row-header">
                       <div className="status-row" style={{ marginTop: 0 }}>
                         <span className="code-badge">#{index + 1}</span>
-                        <span className="status-pill">depth {section.depth}</span>
+                        <span className="status-pill">깊이 {section.depth}</span>
                       </div>
                       <p
                         className="outline-row-preview"
@@ -300,7 +321,7 @@ export function OutlineManager({ projectId, initialSections }: OutlineManagerPro
                         내어쓰기
                       </button>
                       <button
-                        className="secondary-button"
+                        className="button"
                         onClick={() => removeSection(section.localId)}
                         type="button"
                       >

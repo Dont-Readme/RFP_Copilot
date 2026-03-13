@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.models.draft import (
     DraftChatMessage,
+    DraftPlanningConfig,
     DraftSearchTask,
     DraftSection,
     DraftSectionPlan,
@@ -39,6 +40,30 @@ def ensure_project_workspace(db: Session, project: Project) -> None:
         )
         db.add(section)
         db.commit()
+
+
+def ensure_planning_config(db: Session, project_id: int) -> DraftPlanningConfig:
+    config = db.get(DraftPlanningConfig, project_id)
+    if config is not None:
+        return config
+    config = DraftPlanningConfig(project_id=project_id, author_intent="")
+    db.add(config)
+    db.commit()
+    db.refresh(config)
+    return config
+
+
+def update_planning_profile(
+    db: Session,
+    *,
+    project_id: int,
+    author_intent: str,
+) -> DraftPlanningConfig:
+    config = ensure_planning_config(db, project_id)
+    config.author_intent = author_intent
+    db.commit()
+    db.refresh(config)
+    return config
 
 
 def list_draft_sections(db: Session, project_id: int) -> list[DraftSection]:
@@ -80,7 +105,6 @@ def replace_section_plans(
     project_id: int,
     plans: list[dict],
 ) -> list[DraftSectionPlan]:
-    db.execute(delete(DraftSearchTask).where(DraftSearchTask.project_id == project_id))
     db.execute(delete(DraftSectionPlan).where(DraftSectionPlan.project_id == project_id))
 
     created_plans: list[DraftSectionPlan] = []
@@ -104,21 +128,6 @@ def replace_section_plans(
         db.add(section_plan)
         db.flush()
         created_plans.append(section_plan)
-
-        for task in plan.get("search_tasks", []):
-            db.add(
-                DraftSearchTask(
-                    project_id=project_id,
-                    outline_section_id=plan["outline_section_id"],
-                    topic=task["topic"],
-                    reason=task.get("reason", ""),
-                    freshness_required=bool(task.get("freshness_required", True)),
-                    expected_output=task.get("expected_output", ""),
-                    query_text=task.get("query_text", ""),
-                    status=task.get("status", "pending"),
-                    searched_on=task.get("searched_on", ""),
-                )
-            )
 
     db.commit()
     for section_plan in created_plans:
@@ -162,6 +171,42 @@ def list_search_tasks(
     return list(db.scalars(statement).all())
 
 
+def create_search_task(
+    db: Session,
+    *,
+    project_id: int,
+    outline_section_id: int,
+    topic: str,
+    unit_key: str = "",
+    purpose: str = "",
+    reason: str = "",
+    source_stage: str = "planned",
+    freshness_required: bool = True,
+    expected_output: str = "",
+    allowed_domains: list[str] | None = None,
+    max_results: int = 4,
+    status: str = "pending",
+) -> DraftSearchTask:
+    task = DraftSearchTask(
+        project_id=project_id,
+        outline_section_id=outline_section_id,
+        topic=topic,
+        unit_key=unit_key,
+        purpose=purpose,
+        reason=reason,
+        source_stage=source_stage,
+        freshness_required=freshness_required,
+        expected_output=expected_output,
+        allowed_domains_json=json.dumps(allowed_domains or [], ensure_ascii=False),
+        max_results=max_results,
+        status=status,
+    )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+    return task
+
+
 def update_search_task(
     db: Session,
     *,
@@ -169,15 +214,46 @@ def update_search_task(
     status: str,
     query_text: str | None = None,
     searched_on: str | None = None,
+    result_summary: str | None = None,
+    citations_json: str | None = None,
+    sources_json: str | None = None,
 ) -> DraftSearchTask:
     task.status = status
     if query_text is not None:
         task.query_text = query_text
     if searched_on is not None:
         task.searched_on = searched_on
+    if result_summary is not None:
+        task.result_summary = result_summary
+    if citations_json is not None:
+        task.citations_json = citations_json
+    if sources_json is not None:
+        task.sources_json = sources_json
     db.commit()
     db.refresh(task)
     return task
+
+
+def find_cached_search_task(
+    db: Session,
+    *,
+    project_id: int,
+    topic: str,
+    purpose: str,
+    allowed_domains_json: str,
+    searched_on: str,
+) -> DraftSearchTask | None:
+    statement = (
+        select(DraftSearchTask)
+        .where(DraftSearchTask.project_id == project_id)
+        .where(DraftSearchTask.topic == topic)
+        .where(DraftSearchTask.purpose == purpose)
+        .where(DraftSearchTask.allowed_domains_json == allowed_domains_json)
+        .where(DraftSearchTask.searched_on == searched_on)
+        .where(DraftSearchTask.status == "done")
+        .order_by(DraftSearchTask.updated_at.desc())
+    )
+    return db.scalars(statement).first()
 
 
 def list_questions(db: Session, project_id: int) -> list[OpenQuestion]:

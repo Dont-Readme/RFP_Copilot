@@ -1,0 +1,25 @@
+{
+  "id": "20260313T015951327965Z_86d50e94",
+  "project_id": 4,
+  "trace_kind": "draft.research.adaptive",
+  "model": "gpt-5-mini",
+  "system_prompt": null,
+  "user_prompt": null,
+  "input_text": "오늘 날짜는 2026-03-13입니다.\n반드시 web search를 사용해서 아래 조사 요청에 답하세요.\n\n검색 질의:\n2024년 스마트농업 정책 동향 및 ICT 융합 사례\n\n검색 목적:\n최신 스마트농업 관련 정부 정책과 ICT 융합 사례를 파악하여 사업 배경 설명에 활용\n\n검색 이유:\n사업 추진 배경과 정책 환경을 명확히 설명하기 위해 최신 정책과 사례가 필요함\n\n원하는 산출 형태:\n초안 본문 구체화에 바로 사용할 최신 근거 요약\n\n추가 맥락:\nsection=1 사업 배경\n\n지침:\n- 최신성 판단은 반드시 위 절대 날짜를 기준으로 하세요.\n- 질의와 목적에 직접 필요한 사실만 남기고 주변 잡정보는 제외하세요.\n- 한국어로 작성하세요.\n- 출처 인용이 붙도록 작성하세요.\n- 가능하면 공신력 있는 공공·연구·전문기관 출처를 우선하세요.\n- 결과는 최대 5개의 핵심 bullet로 정리하되, 마지막에 한 줄 요약을 덧붙여도 됩니다.\n- 정보가 부족하면 억지로 채우지 말고 부족하다고 분명히 적으세요.",
+  "metadata": {
+    "query": "2024년 스마트농업 정책 동향 및 ICT 융합 사례",
+    "purpose": "최신 스마트농업 관련 정부 정책과 ICT 융합 사례를 파악하여 사업 배경 설명에 활용",
+    "source_stage": "adaptive",
+    "allowed_domains": [
+      "gov.kr",
+      "korea.kr"
+    ],
+    "max_results": 5,
+    "outline_section_id": 1,
+    "section_heading": "1 사업 배경",
+    "unit_title": "1 사업 배경",
+    "writing_mode": "background",
+    "unit_pattern": "policy_background"
+  },
+  "created_at": "2026-03-13T01:59:51.328007+00:00"
+}

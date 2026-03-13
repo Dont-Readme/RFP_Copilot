@@ -8,7 +8,7 @@ from app.core.config import get_settings
 from app.models.library import LibraryAsset
 from app.models.rfp import ProjectFile
 from app.repositories.chunk_repo import list_document_chunks, replace_document_chunks
-from app.services.pdf_service import extract_text_pages_from_path
+from app.services.document_text_service import extract_text_pages_from_path, looks_like_binary_text
 
 MAX_CHUNK_CHARS = 1_400
 
@@ -30,8 +30,18 @@ def _estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4)
 
 
+def _chunks_need_rebuild(chunks: list[dict]) -> bool:
+    if not chunks:
+        return False
+    preview = "\n".join(chunk["text_content"] for chunk in chunks[:3]).strip()
+    return looks_like_binary_text(preview)
+
+
 def _normalize_text(text: str) -> str:
     normalized = text.replace("\r\n", "\n")
+    # PDF 목차/리더 라인에서 나오는 장식 점열은 의미 없이 토큰만 늘리므로 제거한다.
+    normalized = re.sub(r"(?:[·ㆍ․…]\s*){4,}", " ", normalized)
+    normalized = re.sub(r"[^\S\n]{2,}", " ", normalized)
     normalized = re.sub(r"\n{3,}", "\n\n", normalized)
     return normalized.strip()
 
@@ -139,7 +149,7 @@ def ensure_project_file_chunks(db, project_file: ProjectFile) -> ChunkingResult:
         document_id=project_file.id,
     )
     if existing_chunks:
-        return ChunkingResult(
+        cached = ChunkingResult(
             raw_text="\n\n".join(chunk.text_content for chunk in existing_chunks).strip(),
             chunks=[
                 {
@@ -158,7 +168,28 @@ def ensure_project_file_chunks(db, project_file: ProjectFile) -> ChunkingResult:
                 for chunk in existing_chunks
             ],
         )
+        if not _chunks_need_rebuild(cached.chunks):
+            return cached
 
+    settings = get_settings()
+    result = build_document_chunks(
+        document_kind="rfp",
+        document_id=project_file.id,
+        project_id=project_file.project_id,
+        title=project_file.filename,
+        source_path=project_file.path,
+        absolute_path=settings.app_data_dir / project_file.path,
+    )
+    replace_document_chunks(
+        db,
+        document_kind="rfp",
+        document_id=project_file.id,
+        chunks=result.chunks,
+    )
+    return result
+
+
+def rebuild_project_file_chunks(db, project_file: ProjectFile) -> ChunkingResult:
     settings = get_settings()
     result = build_document_chunks(
         document_kind="rfp",
@@ -184,7 +215,7 @@ def ensure_library_asset_chunks(db, asset: LibraryAsset) -> ChunkingResult:
         document_id=asset.id,
     )
     if existing_chunks:
-        return ChunkingResult(
+        cached = ChunkingResult(
             raw_text="\n\n".join(chunk.text_content for chunk in existing_chunks).strip(),
             chunks=[
                 {
@@ -203,6 +234,8 @@ def ensure_library_asset_chunks(db, asset: LibraryAsset) -> ChunkingResult:
                 for chunk in existing_chunks
             ],
         )
+        if not _chunks_need_rebuild(cached.chunks):
+            return cached
 
     settings = get_settings()
     result = build_document_chunks(

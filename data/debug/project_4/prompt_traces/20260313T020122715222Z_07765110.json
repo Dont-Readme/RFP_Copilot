@@ -1,0 +1,26 @@
+{
+  "id": "20260313T020122715222Z_07765110",
+  "project_id": 4,
+  "trace_kind": "draft.research.adaptive",
+  "model": "gpt-5-mini",
+  "system_prompt": null,
+  "user_prompt": null,
+  "input_text": "오늘 날짜는 2026-03-13입니다.\n반드시 web search를 사용해서 아래 조사 요청에 답하세요.\n\n검색 질의:\n스마트농업 데이터 관리 문제점 통계 2023\n\n검색 목적:\n스마트농업 데이터 관리 현황과 문제점에 대한 최신 통계 확보\n\n검색 이유:\n사업 필요성의 문제 정의와 추진 필요성 근거로 활용하기 위함\n\n원하는 산출 형태:\n초안 본문 구체화에 바로 사용할 최신 근거 요약\n\n추가 맥락:\nsection=2 사업 필요성\n\n지침:\n- 최신성 판단은 반드시 위 절대 날짜를 기준으로 하세요.\n- 질의와 목적에 직접 필요한 사실만 남기고 주변 잡정보는 제외하세요.\n- 한국어로 작성하세요.\n- 출처 인용이 붙도록 작성하세요.\n- 가능하면 공신력 있는 공공·연구·전문기관 출처를 우선하세요.\n- 결과는 최대 5개의 핵심 bullet로 정리하되, 마지막에 한 줄 요약을 덧붙여도 됩니다.\n- 정보가 부족하면 억지로 채우지 말고 부족하다고 분명히 적으세요.",
+  "metadata": {
+    "query": "스마트농업 데이터 관리 문제점 통계 2023",
+    "purpose": "스마트농업 데이터 관리 현황과 문제점에 대한 최신 통계 확보",
+    "source_stage": "adaptive",
+    "allowed_domains": [
+      "kosis.kr",
+      "mafra.go.kr",
+      "rda.go.kr"
+    ],
+    "max_results": 5,
+    "outline_section_id": 2,
+    "section_heading": "2 사업 필요성",
+    "unit_title": "2 사업 필요성",
+    "writing_mode": "need",
+    "unit_pattern": "business_need"
+  },
+  "created_at": "2026-03-13T02:01:22.715308+00:00"
+}

@@ -6,22 +6,13 @@ from app.models.draft import DraftChatMessage, DraftSection
 from app.models.evaluation import EvaluationItem
 from app.models.rfp import RfpExtraction, RfpRequirementItem
 from app.services.llm_service import LLMConfigurationError, LLMResponseError, LLMService
-from app.services.review_item_service import merge_review_texts, strip_inline_review_items
+from app.services.prompts import (
+    CHAT_EDIT_SYSTEM_PROMPT,
+    build_chat_edit_user_prompt,
+)
+from app.services.review_item_service import strip_inline_review_items
 
 CHAT_CONTEXT_WINDOW = 900
-
-CHAT_EDIT_SYSTEM_PROMPT = """
-You are editing a Korean proposal draft with the user through a chat interface.
-
-Rules:
-- Respect the user's edit request exactly.
-- Use only information supported by the draft and structured RFP summary.
-- If the user selected text, return replacement text only for the selected span, not the full draft.
-- If no text is selected, provide guidance only and leave `suggestion_text` empty with `apply_mode=advice_only`.
-- Do not invent numbers, certifications, customers, or performance claims.
-- If a requested fact is missing, mention that clearly in `assistant_reply` and return the missing points in `system_review_items`. Do not include `[확인 필요(시스템)]` in `assistant_reply` or `suggestion_text`.
-- Keep the assistant reply concise and practical.
-""".strip()
 
 
 class ChatEditError(RuntimeError):
@@ -86,6 +77,7 @@ def _format_history(messages: list[DraftChatMessage], limit: int = 8) -> str:
 def build_chat_edit(
     *,
     llm_service: LLMService,
+    project_id: int,
     project_name: str,
     draft_section: DraftSection,
     extraction: RfpExtraction,
@@ -105,49 +97,38 @@ def build_chat_edit(
         generated = llm_service.parse_chat_completion(
             model=llm_service.settings.openai_model_draft,
             system_prompt=CHAT_EDIT_SYSTEM_PROMPT,
-            user_prompt=f"""
-Project name: {project_name}
-Draft title: {draft_section.title}
-
-Structured RFP summary:
-{_rfp_summary(extraction, requirements, evaluation_items)}
-
-Recent chat history:
-{_format_history(prior_messages)}
-
-Draft excerpt:
-{excerpt}
-
-Selected text:
-{selected_text or 'No selection'}
-
-User request:
-{user_message}
-
-Return:
-- `assistant_reply`: what you tell the user
-- `suggestion_text`: replacement text for the selected span, or empty if no selection
-- `apply_mode`: `replace_selection` or `advice_only`
-- `diff_hint`: short note about what changed
-- `system_review_items`: missing facts or decisions that should be tracked outside the draft body
-""".strip(),
+            user_prompt=build_chat_edit_user_prompt(
+                project_name=project_name,
+                draft_title=draft_section.title,
+                rfp_summary=_rfp_summary(extraction, requirements, evaluation_items),
+                recent_chat_history=_format_history(prior_messages),
+                draft_excerpt=excerpt,
+                selected_text=selected_text or "No selection",
+                user_request=user_message,
+            ),
             response_format=StructuredChatEdit,
             max_completion_tokens=1600,
+            trace_project_id=project_id,
+            trace_kind="draft.chat",
+            trace_metadata={
+                "draft_section_id": draft_section.id,
+                "draft_title": draft_section.title,
+                "selection_start": selection_start,
+                "selection_end": selection_end,
+                "has_selection": bool(selected_text),
+                "prior_message_count": len(prior_messages),
+            },
         )
     except (LLMConfigurationError, LLMResponseError) as exc:
         raise ChatEditError(str(exc)) from exc
 
-    assistant_reply, assistant_review_items = strip_inline_review_items(generated.assistant_reply.strip())
-    suggestion_text, suggestion_review_items = strip_inline_review_items(generated.suggestion_text.strip())
+    assistant_reply, _assistant_review_items = strip_inline_review_items(generated.assistant_reply.strip())
+    suggestion_text, _suggestion_review_items = strip_inline_review_items(generated.suggestion_text.strip())
 
     return StructuredChatEdit(
         assistant_reply=assistant_reply or "수정 제안을 준비했습니다.",
         suggestion_text=suggestion_text,
         apply_mode=generated.apply_mode,
         diff_hint=generated.diff_hint,
-        system_review_items=merge_review_texts(
-            generated.system_review_items,
-            assistant_review_items,
-            suggestion_review_items,
-        ),
+        system_review_items=[],
     )

@@ -88,7 +88,7 @@ export function ProjectsManager({ initialProjects }: ProjectsManagerProps) {
   return (
     <section className="section-spacer">
       <form className="content-panel" onSubmit={handleCreate}>
-        <p className="eyebrow">Project CRUD</p>
+        <p className="eyebrow">프로젝트 관리</p>
         <h2 className="card-title">프로젝트 생성</h2>
         <div className="form-grid">
           <label className="field">
@@ -116,7 +116,7 @@ export function ProjectsManager({ initialProjects }: ProjectsManagerProps) {
         <section className="card-grid section-spacer">
           {projects.map((project) => (
             <article key={project.id} className="card">
-              <p className="eyebrow">Project #{project.id}</p>
+              <p className="eyebrow">프로젝트 #{project.id}</p>
               <input
                 className="inline-input"
                 value={editingNames[project.id] ?? ""}
@@ -128,7 +128,7 @@ export function ProjectsManager({ initialProjects }: ProjectsManagerProps) {
                 }
               />
               <p className="card-copy">
-                owner: {project.owner_user_id} · updated:{" "}
+                소유자: {project.owner_user_id} · 수정:{" "}
                 {new Date(project.updated_at).toLocaleString("ko-KR")}
               </p>
               <div className="action-row">
@@ -144,7 +144,7 @@ export function ProjectsManager({ initialProjects }: ProjectsManagerProps) {
                   {busyKey === `rename-${project.id}` ? "저장 중..." : "이름 저장"}
                 </button>
                 <button
-                  className="secondary-button"
+                  className="button"
                   disabled={busyKey === `delete-${project.id}`}
                   onClick={() => void handleDelete(project.id)}
                   type="button"

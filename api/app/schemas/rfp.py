@@ -3,9 +3,25 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 RfpFileRole = Literal["notice", "sow", "rfp", "requirements", "other"]
+
+
+class RequirementSourceSelection(BaseModel):
+    file_id: int = Field(ge=1)
+    page_from: int | None = Field(default=None, ge=1)
+    page_to: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def validate_page_range(self) -> "RequirementSourceSelection":
+        if (
+            self.page_from is not None
+            and self.page_to is not None
+            and self.page_from > self.page_to
+        ):
+            raise ValueError("page_from must be less than or equal to page_to")
+        return self
 
 
 class EvaluationItemPayload(BaseModel):
@@ -75,6 +91,7 @@ class RfpExtractionBase(BaseModel):
 
 
 class RfpExtractionUpdate(RfpExtractionBase):
+    requirement_sources: list[RequirementSourceSelection] = Field(default_factory=list)
     requirements: list[RfpRequirementItemPayload] = Field(default_factory=list)
     evaluation_items: list[RfpEvaluationItemPayload] = Field(default_factory=list)
 
@@ -84,6 +101,7 @@ class RfpExtractionRead(RfpExtractionBase):
 
     project_id: int
     updated_at: datetime
+    requirement_sources: list[RequirementSourceSelection] = Field(default_factory=list)
     files: list[ProjectFileRead] = Field(default_factory=list)
     requirements: list[RfpRequirementItemRead] = Field(default_factory=list)
     evaluation_items: list[RfpEvaluationItemRead] = Field(default_factory=list)
@@ -96,3 +114,4 @@ class RfpFileUploadResponse(BaseModel):
 
 class RfpExtractionRunRequest(BaseModel):
     file_ids: list[int] = Field(default_factory=list)
+    requirement_sources: list[RequirementSourceSelection] = Field(default_factory=list)

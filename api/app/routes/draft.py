@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -14,19 +16,22 @@ from app.repositories.draft_chat_repo import (
     mark_message_applied,
 )
 from app.repositories.draft_repo import (
-    append_review_items,
+    ensure_planning_config,
     ensure_project_workspace,
     get_draft_section,
     get_question,
     list_draft_sections,
     list_questions,
+    list_search_tasks,
     replace_project_workspace,
+    update_planning_profile,
     update_draft_section,
     update_question_status,
 )
 from app.repositories.outline_repo import ensure_project_outline
 from app.repositories.project_repo import get_project
 from app.repositories.rfp_repo import ensure_rfp_extraction, list_requirement_items
+from app.services.asset_context_service import build_asset_text_index
 from app.schemas.draft import (
     DraftChatApplyResponse,
     DraftChatMessageRead,
@@ -34,7 +39,12 @@ from app.schemas.draft import (
     DraftChatResponse,
     DraftGenerateRequest,
     DraftGenerateResponse,
+    DraftGenerationUnitRead,
     DraftPlanResponse,
+    DraftPlanningConfigRead,
+    DraftPlanningConfigUpdate,
+    DraftRequirementCoverageRead,
+    DraftSearchTaskRead,
     DraftSectionPlanRead,
     DraftSectionRead,
     DraftSectionUpdate,
@@ -46,25 +56,28 @@ from app.schemas.draft import (
 from app.services.draft_plan_service import (
     DraftPlanResult,
     DraftSectionPlan,
-    build_draft_plan,
 )
+from app.services.draft_planner_v2_service import build_ai_draft_plan
 from app.services.chat_edit_service import ChatEditError, build_chat_edit
 from app.services.draft_pipeline_service import run_draft_pipeline
 from app.services.draft_service import DraftGenerationError
 from app.services.llm_service import LLMService, get_llm_service
-from app.services.review_item_service import (
-    ReviewItemPayload,
-    build_heading_text,
-    build_review_items_for_section,
-    infer_fallback_review_items,
-    locate_heading_for_offset,
-    merge_review_payloads,
-)
 from app.services.rewrite_service import build_rewrite_suggestion
 
 router = APIRouter(tags=["draft"])
 
 def _build_plan_response(project_id: int, result: DraftPlanResult) -> DraftPlanResponse:
+    requirement_titles: dict[int, str] = {}
+    asset_titles: dict[int, str] = {}
+
+    for section_plan in result.sections:
+        for requirement in section_plan.assigned_requirements:
+            requirement_titles[requirement.id] = (
+                requirement.name or requirement.requirement_no or "요구사항"
+            ).strip()
+        for asset in section_plan.assigned_assets:
+            asset_titles[asset.id] = asset.title.strip()
+
     def build_section(section_plan: DraftSectionPlan) -> DraftSectionPlanRead:
         return DraftSectionPlanRead(
             section_id=section_plan.section.id,
@@ -90,6 +103,53 @@ def _build_plan_response(project_id: int, result: DraftPlanResult) -> DraftPlanR
         ready=result.ready,
         warnings=result.warnings,
         sections=[build_section(section_plan) for section_plan in result.sections],
+        author_intent=result.author_intent,
+        planner_summary=result.planner_summary,
+        planner_mode=result.planner_mode,
+        generation_units=[
+            DraftGenerationUnitRead(
+                unit_key=unit.unit_key,
+                outline_section_id=unit.outline_section_id,
+                section_heading_text=unit.section_heading_text,
+                unit_title=unit.unit_title,
+                unit_goal=unit.unit_goal,
+                writing_instruction=unit.writing_instruction,
+                writing_mode=unit.writing_mode,
+                unit_pattern=unit.unit_pattern,
+                required_aspects=unit.required_aspects,
+                primary_requirement_titles=[
+                    requirement_titles[requirement_id]
+                    for requirement_id in unit.primary_requirement_ids
+                    if requirement_id in requirement_titles
+                ],
+                secondary_requirement_titles=[
+                    requirement_titles[requirement_id]
+                    for requirement_id in unit.secondary_requirement_ids
+                    if requirement_id in requirement_titles
+                ],
+                asset_titles=[
+                    asset_titles[asset_id]
+                    for asset_id in unit.asset_ids
+                    if asset_id in asset_titles
+                ],
+                search_topics=[task.topic for task in unit.search_tasks],
+                outline_fit_warning=unit.outline_fit_warning,
+            )
+            for unit in result.generation_units
+        ],
+        requirement_coverage=[
+            DraftRequirementCoverageRead(
+                requirement_id=item.requirement_id,
+                requirement_label=requirement_titles.get(item.requirement_id, "요구사항"),
+                primary_unit_key=item.primary_unit_key,
+                primary_outline_section_id=item.primary_outline_section_id,
+                secondary_unit_keys=item.secondary_unit_keys,
+                rationale=item.rationale,
+            )
+            for item in result.requirement_coverage
+        ],
+        coverage_warnings=result.coverage_warnings,
+        generation_requires_confirmation=result.generation_requires_confirmation,
     )
 
 
@@ -104,9 +164,92 @@ async def read_draft_sections(
     return list_draft_sections(db, project_id)
 
 
+@router.get(
+    "/projects/{project_id}/draft/planning-config",
+    response_model=DraftPlanningConfigRead,
+)
+async def read_draft_planning_config(
+    project_id: int,
+    db: Session = Depends(get_db),
+) -> DraftPlanningConfigRead:
+    project = get_project(db, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+    config = ensure_planning_config(db, project_id)
+    return DraftPlanningConfigRead(
+        project_id=config.project_id,
+        author_intent=config.author_intent,
+    )
+
+
+@router.put(
+    "/projects/{project_id}/draft/planning-config",
+    response_model=DraftPlanningConfigRead,
+)
+async def update_draft_planning_config(
+    project_id: int,
+    payload: DraftPlanningConfigUpdate,
+    db: Session = Depends(get_db),
+) -> DraftPlanningConfigRead:
+    project = get_project(db, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+    config = update_planning_profile(
+        db,
+        project_id=project_id,
+        author_intent=payload.author_intent,
+    )
+    return DraftPlanningConfigRead(
+        project_id=config.project_id,
+        author_intent=config.author_intent,
+    )
+
+
+@router.get(
+    "/projects/{project_id}/draft/search-tasks",
+    response_model=list[DraftSearchTaskRead],
+)
+async def read_draft_search_tasks(
+    project_id: int,
+    db: Session = Depends(get_db),
+) -> list[DraftSearchTaskRead]:
+    project = get_project(db, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+    tasks = list_search_tasks(db, project_id=project_id)
+    items: list[DraftSearchTaskRead] = []
+    for task in tasks:
+        items.append(
+            DraftSearchTaskRead(
+                id=task.id,
+                project_id=task.project_id,
+                outline_section_id=task.outline_section_id,
+                topic=task.topic,
+                unit_key=task.unit_key,
+                purpose=task.purpose,
+                reason=task.reason,
+                source_stage=task.source_stage,
+                expected_output=task.expected_output,
+                allowed_domains=list(json.loads(task.allowed_domains_json or "[]")),
+                max_results=task.max_results,
+                query_text=task.query_text,
+                result_summary=task.result_summary,
+                citations=list(json.loads(task.citations_json or "[]")),
+                sources=list(json.loads(task.sources_json or "[]")),
+                status=task.status,
+                searched_on=task.searched_on,
+                created_at=task.created_at,
+                updated_at=task.updated_at,
+            )
+        )
+    return items
+
+
 @router.get("/projects/{project_id}/draft/plan", response_model=DraftPlanResponse)
 async def read_draft_plan(
-    project_id: int, db: Session = Depends(get_db)
+    project_id: int,
+    db: Session = Depends(get_db),
+    llm_service: LLMService = Depends(get_llm_service),
 ) -> DraftPlanResponse:
     project = get_project(db, project_id)
     if project is None:
@@ -117,14 +260,23 @@ async def read_draft_plan(
     requirements = list_requirement_items(db, project_id)
     evaluation_items = list_evaluation_items(db, project_id)
     assets = list_project_assets(db, project_id)
-    plan = build_draft_plan(
-        project_name=project.name,
-        sections=sections,
-        extraction=extraction,
-        requirements=requirements,
-        evaluation_items=evaluation_items,
-        assets=assets,
-    )
+    asset_text_index = build_asset_text_index(db, assets)
+    planning_config = ensure_planning_config(db, project_id)
+    try:
+        plan = build_ai_draft_plan(
+            llm_service=llm_service,
+            project_id=project_id,
+            project_name=project.name,
+            author_intent=planning_config.author_intent,
+            sections=sections,
+            extraction=extraction,
+            requirements=requirements,
+            evaluation_items=evaluation_items,
+            assets=assets,
+            asset_text_index=asset_text_index,
+        )
+    except DraftGenerationError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     return _build_plan_response(project_id, plan)
 
 
@@ -146,20 +298,34 @@ async def generate_draft(
     requirements = list_requirement_items(db, project_id)
     evaluation_items = list_evaluation_items(db, project_id)
     assets = list_project_assets(db, project_id)
-    plan = build_draft_plan(
+    asset_text_index = build_asset_text_index(db, assets)
+    planning_config = ensure_planning_config(db, project_id)
+    plan = build_ai_draft_plan(
+        llm_service=llm_service,
+        project_id=project_id,
         project_name=project.name,
+        author_intent=planning_config.author_intent,
         sections=sections,
         extraction=extraction,
         requirements=requirements,
         evaluation_items=evaluation_items,
         assets=assets,
+        asset_text_index=asset_text_index,
     )
     if not plan.ready:
         detail = " ".join(plan.warnings) or "Draft generation prerequisites are not ready."
         raise HTTPException(status_code=400, detail=detail)
+    if plan.generation_requires_confirmation and not payload.confirm_warnings:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "현재 목차 구조로는 요구사항 커버 품질이 떨어질 수 있어 확인이 필요합니다.",
+                "coverage_warnings": plan.coverage_warnings,
+            },
+        )
 
     try:
-        content_md, review_items, _ = run_draft_pipeline(
+        content_md, _review_items, _ = run_draft_pipeline(
             db=db,
             project=project,
             sections=sections,
@@ -168,6 +334,8 @@ async def generate_draft(
             evaluation_items=evaluation_items,
             assets=assets,
             llm_service=llm_service,
+            asset_text_index=asset_text_index,
+            plan_result=plan,
         )
     except DraftGenerationError as exc:
         raise HTTPException(status_code=502, detail=f"Draft generation failed: {exc}") from exc
@@ -176,7 +344,7 @@ async def generate_draft(
         project,
         title="목차 기반 초안",
         content_md=content_md,
-        review_items=review_items,
+        review_items=[],
     )
     return DraftGenerateResponse(
         section=DraftSectionRead.model_validate(section),
@@ -262,8 +430,6 @@ async def create_draft_chat_turn(
     section = get_draft_section(db, project_id, payload.section_id)
     if section is None:
         raise HTTPException(status_code=404, detail=f"Draft section {payload.section_id} not found")
-    outline_sections = ensure_project_outline(db, project_id)
-
     extraction = ensure_rfp_extraction(db, project_id)
     requirements = list_requirement_items(db, project_id)
     evaluation_items = list_evaluation_items(db, project_id)
@@ -274,6 +440,7 @@ async def create_draft_chat_turn(
     try:
         generated = build_chat_edit(
             llm_service=llm_service,
+            project_id=project_id,
             project_name=project.name,
             draft_section=section,
             extraction=extraction,
@@ -312,53 +479,10 @@ async def create_draft_chat_turn(
         selection_end=payload.selection_end,
         selection_text=payload.selection_text.strip() if payload.selection_text else None,
     )
-    review_items: list[ReviewItemPayload] = []
-    section_heading_text = locate_heading_for_offset(
-        content=section.content_md,
-        sections=outline_sections,
-        offset=payload.selection_start,
-    )
-    matched_outline_section = next(
-        (
-            outline_section
-            for outline_section in outline_sections
-            if build_heading_text(outline_section) == section_heading_text
-        ),
-        None,
-    )
-    if section_heading_text:
-        review_items = merge_review_payloads(
-            build_review_items_for_section(
-                outline_section_id=matched_outline_section.id if matched_outline_section else None,
-                section_heading_text=section_heading_text,
-                item_texts=generated.system_review_items,
-                category="missing_evidence",
-                severity="medium",
-                source_agent="assistant",
-            ),
-            build_review_items_for_section(
-                outline_section_id=matched_outline_section.id if matched_outline_section else None,
-                section_heading_text=section_heading_text,
-                item_texts=infer_fallback_review_items(
-                    section_heading_text=section_heading_text,
-                    summary_text=extraction.project_summary_text,
-                ),
-                category="missing_evidence",
-                severity="medium",
-                source_agent="system",
-            ),
-        )
-
-    created_review_items = append_review_items(
-        db,
-        project_id=project_id,
-        draft_section_id=section.id,
-        review_items=review_items,
-    )
     return DraftChatResponse(
         user_message=DraftChatMessageRead.model_validate(user_message),
         assistant_message=DraftChatMessageRead.model_validate(assistant_message),
-        review_items=[OpenQuestionRead.model_validate(item) for item in created_review_items],
+        review_items=[],
     )
 
 

@@ -101,17 +101,95 @@ class DraftSectionPlanRead(BaseModel):
     status: str = "planned"
 
 
+class DraftPlanningConfigRead(BaseModel):
+    project_id: int
+    author_intent: str = ""
+
+
+class DraftPlanningConfigUpdate(BaseModel):
+    author_intent: str = ""
+
+
+class DraftGenerationUnitRead(BaseModel):
+    unit_key: str
+    outline_section_id: int
+    section_heading_text: str
+    unit_title: str
+    unit_goal: str = ""
+    writing_instruction: str = ""
+    writing_mode: str = "execution"
+    unit_pattern: str = "functional_workflow"
+    required_aspects: list[str] = Field(default_factory=list)
+    primary_requirement_titles: list[str] = Field(default_factory=list)
+    secondary_requirement_titles: list[str] = Field(default_factory=list)
+    asset_titles: list[str] = Field(default_factory=list)
+    search_topics: list[str] = Field(default_factory=list)
+    outline_fit_warning: str = ""
+
+
+class DraftRequirementCoverageRead(BaseModel):
+    requirement_id: int
+    requirement_label: str
+    primary_unit_key: str
+    primary_outline_section_id: int
+    secondary_unit_keys: list[str] = Field(default_factory=list)
+    rationale: str = ""
+
+
 class DraftPlanResponse(BaseModel):
     project_id: int
     ready: bool
     warnings: list[str] = Field(default_factory=list)
     sections: list[DraftSectionPlanRead]
+    author_intent: str = ""
+    planner_summary: str = ""
+    planner_mode: str = "rule_based"
+    generation_units: list[DraftGenerationUnitRead] = Field(default_factory=list)
+    requirement_coverage: list[DraftRequirementCoverageRead] = Field(default_factory=list)
+    coverage_warnings: list[str] = Field(default_factory=list)
+    generation_requires_confirmation: bool = False
 
 
 class DraftGenerateRequest(BaseModel):
     mode: str = Field(default="full")
+    confirm_warnings: bool = False
 
 
 class DraftGenerateResponse(BaseModel):
     section: DraftSectionRead
     questions: list[OpenQuestionRead]
+
+
+class DraftSearchCitationRead(BaseModel):
+    title: str
+    url: str
+    snippet: str = ""
+
+
+class DraftSearchSourceRead(BaseModel):
+    title: str
+    url: str
+
+
+class DraftSearchTaskRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    project_id: int
+    outline_section_id: int
+    topic: str
+    unit_key: str
+    purpose: str
+    reason: str
+    source_stage: str
+    expected_output: str
+    allowed_domains: list[str] = Field(default_factory=list)
+    max_results: int
+    query_text: str
+    result_summary: str
+    citations: list[DraftSearchCitationRead] = Field(default_factory=list)
+    sources: list[DraftSearchSourceRead] = Field(default_factory=list)
+    status: str
+    searched_on: str
+    created_at: datetime
+    updated_at: datetime

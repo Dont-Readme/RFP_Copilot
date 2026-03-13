@@ -3,9 +3,13 @@ import type {
   Citation,
   DraftChatMessage,
   DraftChatTurn,
+  DraftPlanningConfig,
+  DebugRfpChunksResult,
+  DebugPlannerResult,
   DraftGeneratePayload,
   DraftGenerateResult,
   DraftPlanResult,
+  DraftSearchTask,
   DraftSection,
   ExportSession,
   LibraryAsset,
@@ -14,6 +18,7 @@ import type {
   Project,
   ProjectFile,
   ProjectAssetLinkResult,
+  PromptTraceListResult,
   RfpExtraction,
   RfpUploadResponse,
   SearchRunResult,
@@ -170,6 +175,50 @@ export async function getDraftPlan(projectId: number): Promise<DraftPlanResult> 
   return request<DraftPlanResult>(`/api/projects/${projectId}/draft/plan`);
 }
 
+export async function getDraftPlanningConfig(projectId: number): Promise<DraftPlanningConfig> {
+  return request<DraftPlanningConfig>(`/api/projects/${projectId}/draft/planning-config`);
+}
+
+export async function updateDraftPlanningConfig(
+  projectId: number,
+  payload: { author_intent: string }
+): Promise<DraftPlanningConfig> {
+  return request<DraftPlanningConfig>(`/api/projects/${projectId}/draft/planning-config`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function getDraftSearchTasks(projectId: number): Promise<DraftSearchTask[]> {
+  return request<DraftSearchTask[]>(`/api/projects/${projectId}/draft/search-tasks`);
+}
+
+export async function getPromptTraces(
+  projectId: number,
+  limit = 100
+): Promise<PromptTraceListResult> {
+  return request<PromptTraceListResult>(
+    `/api/projects/${projectId}/debug/prompt-traces?limit=${encodeURIComponent(String(limit))}`
+  );
+}
+
+export async function getDebugRfpChunks(projectId: number): Promise<DebugRfpChunksResult> {
+  return request<DebugRfpChunksResult>(`/api/projects/${projectId}/debug/rfp-chunks`);
+}
+
+export async function getDebugDraftPlan(projectId: number): Promise<DebugPlannerResult> {
+  return request<DebugPlannerResult>(`/api/projects/${projectId}/debug/draft-plan`);
+}
+
+export async function rebuildDebugRfpChunks(projectId: number): Promise<DebugRfpChunksResult> {
+  return request<DebugRfpChunksResult>(`/api/projects/${projectId}/debug/rfp-chunks/rebuild`, {
+    method: "POST"
+  });
+}
+
 export async function generateDraft(
   projectId: number,
   payload?: DraftGeneratePayload
@@ -272,7 +321,14 @@ export async function getRfpExtraction(projectId: number): Promise<RfpExtraction
 
 export async function rerunRfpExtraction(
   projectId: number,
-  payload?: { file_ids?: number[] }
+  payload?: {
+    file_ids?: number[];
+    requirement_sources?: Array<{
+      file_id: number;
+      page_from?: number | null;
+      page_to?: number | null;
+    }>;
+  }
 ): Promise<RfpExtraction> {
   return request<RfpExtraction>(`/api/projects/${projectId}/rfp/extract`, {
     method: "POST",

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
+from collections.abc import Mapping
 from typing import TypeVar, cast
 
 from openai import OpenAI
 from pydantic import BaseModel
 
 from app.core.config import get_settings
+from app.services.prompt_trace_service import record_prompt_trace
 
 StructuredResponseT = TypeVar("StructuredResponseT", bound=BaseModel)
 
@@ -75,7 +77,19 @@ class LLMService:
         user_prompt: str,
         response_format: type[StructuredResponseT],
         max_completion_tokens: int = 2500,
+        trace_project_id: int | None = None,
+        trace_kind: str | None = None,
+        trace_metadata: Mapping[str, object] | None = None,
     ) -> StructuredResponseT:
+        if trace_project_id is not None and trace_kind:
+            record_prompt_trace(
+                project_id=trace_project_id,
+                trace_kind=trace_kind,
+                model=model,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                metadata=trace_metadata,
+            )
         try:
             completion = self.require_client().beta.chat.completions.parse(
                 model=model,

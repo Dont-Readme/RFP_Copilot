@@ -18,11 +18,13 @@ from app.repositories.draft_repo import ensure_project_workspace
 from app.repositories.outline_repo import ensure_project_outline
 from app.repositories.project_repo import list_projects
 from app.routes.draft import router as draft_router
+from app.routes.debug import router as debug_router
 from app.routes.export import router as export_router
 from app.routes.health import router as health_router
 from app.routes.library import router as library_router
 from app.routes.outline import router as outline_router
 from app.routes.projects import router as projects_router
+from app.routes.research import router as research_router
 from app.routes.rfp import router as rfp_router
 
 configure_logging()
@@ -117,7 +119,63 @@ def ensure_runtime_schema_compatibility() -> None:
                 connection,
                 table_name="open_questions",
                 column_name="source_agent",
-                ddl="ALTER TABLE open_questions ADD COLUMN source_agent VARCHAR(20) NOT NULL DEFAULT 'reviewer'",
+                ddl="ALTER TABLE open_questions ADD COLUMN source_agent VARCHAR(20) NOT NULL DEFAULT 'system'",
+            )
+        if "draft_search_tasks" in existing_tables:
+            _ensure_column(
+                connection,
+                table_name="draft_search_tasks",
+                column_name="unit_key",
+                ddl="ALTER TABLE draft_search_tasks ADD COLUMN unit_key VARCHAR(120) NOT NULL DEFAULT ''",
+            )
+            _ensure_column(
+                connection,
+                table_name="draft_search_tasks",
+                column_name="purpose",
+                ddl="ALTER TABLE draft_search_tasks ADD COLUMN purpose VARCHAR(100) NOT NULL DEFAULT ''",
+            )
+            _ensure_column(
+                connection,
+                table_name="draft_search_tasks",
+                column_name="source_stage",
+                ddl="ALTER TABLE draft_search_tasks ADD COLUMN source_stage VARCHAR(20) NOT NULL DEFAULT 'planned'",
+            )
+            _ensure_column(
+                connection,
+                table_name="draft_search_tasks",
+                column_name="allowed_domains_json",
+                ddl="ALTER TABLE draft_search_tasks ADD COLUMN allowed_domains_json TEXT NOT NULL DEFAULT '[]'",
+            )
+            _ensure_column(
+                connection,
+                table_name="draft_search_tasks",
+                column_name="max_results",
+                ddl="ALTER TABLE draft_search_tasks ADD COLUMN max_results INTEGER NOT NULL DEFAULT 4",
+            )
+            _ensure_column(
+                connection,
+                table_name="draft_search_tasks",
+                column_name="result_summary",
+                ddl="ALTER TABLE draft_search_tasks ADD COLUMN result_summary TEXT NOT NULL DEFAULT ''",
+            )
+            _ensure_column(
+                connection,
+                table_name="draft_search_tasks",
+                column_name="citations_json",
+                ddl="ALTER TABLE draft_search_tasks ADD COLUMN citations_json TEXT NOT NULL DEFAULT '[]'",
+            )
+            _ensure_column(
+                connection,
+                table_name="draft_search_tasks",
+                column_name="sources_json",
+                ddl="ALTER TABLE draft_search_tasks ADD COLUMN sources_json TEXT NOT NULL DEFAULT '[]'",
+            )
+        if "draft_planning_configs" in existing_tables:
+            _ensure_column(
+                connection,
+                table_name="draft_planning_configs",
+                column_name="required_search_profile",
+                ddl="ALTER TABLE draft_planning_configs ADD COLUMN required_search_profile TEXT NOT NULL DEFAULT ''",
             )
 
 
@@ -193,6 +251,8 @@ app.include_router(health_router, prefix="/api")
 app.include_router(projects_router, prefix="/api")
 app.include_router(library_router, prefix="/api")
 app.include_router(draft_router, prefix="/api")
+app.include_router(research_router, prefix="/api")
 app.include_router(rfp_router, prefix="/api")
 app.include_router(outline_router, prefix="/api")
 app.include_router(export_router, prefix="/api")
+app.include_router(debug_router, prefix="/api")

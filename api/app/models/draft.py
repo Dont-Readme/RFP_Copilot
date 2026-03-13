@@ -46,7 +46,7 @@ class OpenQuestion(Base):
         String(20), nullable=False, default="medium", server_default="medium"
     )
     source_agent: Mapped[str] = mapped_column(
-        String(20), nullable=False, default="reviewer", server_default="reviewer"
+        String(20), nullable=False, default="system", server_default="system"
     )
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="open")
     created_at: Mapped[datetime] = mapped_column(
@@ -110,14 +110,26 @@ class DraftSearchTask(Base):
         ForeignKey("outline_sections.id"), nullable=False, index=True
     )
     topic: Mapped[str] = mapped_column(String(255), nullable=False)
+    unit_key: Mapped[str] = mapped_column(String(120), nullable=False, default="", server_default="")
+    purpose: Mapped[str] = mapped_column(String(100), nullable=False, default="", server_default="")
     reason: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    source_stage: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="planned", server_default="planned"
+    )
     freshness_required: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default="1"
     )
     expected_output: Mapped[str] = mapped_column(
         String(100), nullable=False, default="", server_default=""
     )
+    allowed_domains_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]", server_default="[]"
+    )
+    max_results: Mapped[int] = mapped_column(Integer, nullable=False, default=4, server_default="4")
     query_text: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    result_summary: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    citations_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]", server_default="[]")
+    sources_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]", server_default="[]")
     status: Mapped[str] = mapped_column(
         String(30), nullable=False, default="pending", server_default="pending"
     )
@@ -151,4 +163,24 @@ class DraftChatMessage(Base):
     applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=False), default=datetime.utcnow, nullable=False
+    )
+
+
+class DraftPlanningConfig(Base):
+    __tablename__ = "draft_planning_configs"
+
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id"), primary_key=True, nullable=False
+    )
+    author_intent: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
+    required_search_profile: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False),
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
     )

@@ -6,7 +6,7 @@ type SystemNoticeProps = {
 export function SystemNotice({ title, description }: SystemNoticeProps) {
   return (
     <article className="mini-card system-notice">
-      <p className="eyebrow">System Notice</p>
+      <p className="eyebrow">시스템 안내</p>
       <h2>{title}</h2>
       <p>{description}</p>
     </article>

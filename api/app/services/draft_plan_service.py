@@ -15,6 +15,9 @@ class PlannedSearchTask:
     reason: str
     freshness_required: bool = True
     expected_output: str = ""
+    purpose: str = ""
+    allowed_domains: list[str] = field(default_factory=list)
+    max_results: int = 4
 
 
 @dataclass(frozen=True)
@@ -33,10 +36,104 @@ class DraftSectionPlan:
 
 
 @dataclass(frozen=True)
+class DraftGenerationUnit:
+    unit_key: str
+    outline_section_id: int
+    unit_title: str
+    section_heading_text: str
+    section_goal: str
+    unit_goal: str
+    writing_instruction: str
+    writing_mode: str = "execution"
+    unit_pattern: str = "functional_workflow"
+    required_aspects: list[str] = field(default_factory=list)
+    primary_requirement_ids: list[int] = field(default_factory=list)
+    secondary_requirement_ids: list[int] = field(default_factory=list)
+    evaluation_item_ids: list[int] = field(default_factory=list)
+    asset_ids: list[int] = field(default_factory=list)
+    company_facts: list[str] = field(default_factory=list)
+    search_tasks: list[PlannedSearchTask] = field(default_factory=list)
+    outline_fit_warning: str = ""
+
+
+@dataclass(frozen=True)
+class DraftRequirementCoverage:
+    requirement_id: int
+    primary_unit_key: str
+    primary_outline_section_id: int
+    secondary_unit_keys: list[str] = field(default_factory=list)
+    rationale: str = ""
+
+
+@dataclass(frozen=True)
 class DraftPlanResult:
     ready: bool
     warnings: list[str]
     sections: list[DraftSectionPlan]
+    author_intent: str = ""
+    planner_summary: str = ""
+    planner_mode: str = "rule_based"
+    generation_units: list[DraftGenerationUnit] = field(default_factory=list)
+    requirement_coverage: list[DraftRequirementCoverage] = field(default_factory=list)
+    coverage_warnings: list[str] = field(default_factory=list)
+    generation_requires_confirmation: bool = False
+
+
+@dataclass(frozen=True)
+class PlannerRequirementDiagnostic:
+    requirement_id: int
+    requirement_no: str
+    name: str
+    definition: str
+    details: str
+    score: int
+    matched_tokens: list[str]
+    selected: bool
+
+
+@dataclass(frozen=True)
+class PlannerEvaluationDiagnostic:
+    evaluation_item_id: int
+    item: str
+    score_text: str
+    notes: str
+    score: int
+    matched_tokens: list[str]
+    selected: bool
+
+
+@dataclass(frozen=True)
+class PlannerAssetDiagnostic:
+    asset_id: int
+    category: str
+    title: str
+    score: int
+    matched_tokens: list[str]
+    compact_heading_match: bool
+    selected: bool
+    snippet_previews: list[str]
+
+
+@dataclass(frozen=True)
+class DraftSectionPlanDebug:
+    section_id: int
+    heading_text: str
+    heading_path: list[str]
+    section_tokens: list[str]
+    section_goal: str
+    draft_guidance: str
+    assigned_company_facts: list[str]
+    search_tasks: list[PlannedSearchTask]
+    requirement_candidates: list[PlannerRequirementDiagnostic]
+    evaluation_candidates: list[PlannerEvaluationDiagnostic]
+    asset_candidates: list[PlannerAssetDiagnostic]
+
+
+@dataclass(frozen=True)
+class DraftPlanDebugResult:
+    ready: bool
+    warnings: list[str]
+    sections: list[DraftSectionPlanDebug]
 
 
 SECTION_PLAYBOOKS = (
@@ -88,6 +185,34 @@ SEARCH_RULES = (
     ),
 )
 
+ASSET_CATEGORY_HINTS: dict[str, str] = {
+    "회사소개": "회사 소개 기업 개요 일반현황 연혁 비전 조직 핵심역량",
+    "제품": "제품 서비스 솔루션 플랫폼 기술 기술력 스마트팜",
+    "실적": "실적 수행사례 레퍼런스 사업경험 구축사례",
+    "인력": "인력 조직 수행체계 참여인력 인원 전문인력",
+    "특허": "특허 지식재산 지재권 저작권 인증 기술력",
+    "재무": "재무 매출 손익 안정성 신용",
+    "레퍼런스": "레퍼런스 사례 실적 고객 구축",
+    "기타": "",
+}
+INTERNAL_EVIDENCE_SEARCH_KEYWORDS = (
+    "회사",
+    "소개",
+    "특허",
+    "지식재산",
+    "지재권",
+    "저작권",
+    "인증",
+    "기술력",
+    "실적",
+    "레퍼런스",
+    "인력",
+    "조직",
+    "제품",
+    "서비스",
+    "솔루션",
+)
+
 
 def build_heading_text(section: OutlineSection) -> str:
     label = (section.display_label or "").strip()
@@ -99,6 +224,10 @@ def build_heading_text(section: OutlineSection) -> str:
 
 def _tokens(text: str) -> set[str]:
     return {token for token in re.findall(r"[A-Za-z0-9가-힣]+", text.lower()) if len(token) >= 2}
+
+
+def _compact(text: str) -> str:
+    return re.sub(r"\s+", "", text).lower()
 
 
 def _heading_text(section: OutlineSection) -> str:
@@ -124,6 +253,13 @@ def _score_text(section_tokens: set[str], *candidate_texts: str) -> int:
         return 0
     overlap = section_tokens & candidate_tokens
     return len(overlap)
+
+
+def _matched_tokens(section_tokens: set[str], *candidate_texts: str) -> list[str]:
+    candidate_tokens = _tokens(" ".join(text for text in candidate_texts if text))
+    if not section_tokens or not candidate_tokens:
+        return []
+    return sorted(section_tokens & candidate_tokens)
 
 
 def _rank_requirements(
@@ -162,6 +298,69 @@ def _rank_requirements(
     return matched[:limit]
 
 
+def _requirement_diagnostics(
+    *,
+    heading_text: str,
+    requirements: list[RfpRequirementItem],
+    limit: int = 8,
+) -> list[PlannerRequirementDiagnostic]:
+    section_tokens = _tokens(heading_text)
+    diagnostics = [
+        PlannerRequirementDiagnostic(
+            requirement_id=requirement.id,
+            requirement_no=requirement.requirement_no,
+            name=requirement.name,
+            definition=requirement.definition,
+            details=requirement.details,
+            score=_score_text(
+                section_tokens,
+                requirement.requirement_no,
+                requirement.name,
+                requirement.definition,
+                requirement.details,
+            ),
+            matched_tokens=_matched_tokens(
+                section_tokens,
+                requirement.requirement_no,
+                requirement.name,
+                requirement.definition,
+                requirement.details,
+            ),
+            selected=False,
+        )
+        for requirement in requirements
+    ]
+    ranked = sorted(
+        diagnostics,
+        key=lambda item: (
+            -item.score,
+            next(
+                (
+                    requirement.sort_order
+                    for requirement in requirements
+                    if requirement.id == item.requirement_id
+                ),
+                0,
+            ),
+            item.requirement_id,
+        ),
+    )
+    selected_ids = set([item.requirement_id for item in ranked if item.score > 0][:4])
+    return [
+        PlannerRequirementDiagnostic(
+            requirement_id=item.requirement_id,
+            requirement_no=item.requirement_no,
+            name=item.name,
+            definition=item.definition,
+            details=item.details,
+            score=item.score,
+            matched_tokens=item.matched_tokens,
+            selected=item.requirement_id in selected_ids,
+        )
+        for item in ranked[:limit]
+    ]
+
+
 def _rank_evaluation_items(
     *,
     heading_text: str,
@@ -181,25 +380,154 @@ def _rank_evaluation_items(
     return matched[:limit]
 
 
+def _evaluation_diagnostics(
+    *,
+    heading_text: str,
+    evaluation_items: list[EvaluationItem],
+    limit: int = 6,
+) -> list[PlannerEvaluationDiagnostic]:
+    section_tokens = _tokens(heading_text)
+    diagnostics = [
+        PlannerEvaluationDiagnostic(
+            evaluation_item_id=item.id,
+            item=item.item,
+            score_text=item.score,
+            notes=item.notes,
+            score=_score_text(section_tokens, item.item, item.score, item.notes),
+            matched_tokens=_matched_tokens(section_tokens, item.item, item.score, item.notes),
+            selected=False,
+        )
+        for item in evaluation_items
+    ]
+    ranked = sorted(
+        diagnostics,
+        key=lambda item: (-item.score, item.evaluation_item_id),
+    )
+    selected_ids = set([item.evaluation_item_id for item in ranked if item.score > 0][:3])
+    return [
+        PlannerEvaluationDiagnostic(
+            evaluation_item_id=item.evaluation_item_id,
+            item=item.item,
+            score_text=item.score_text,
+            notes=item.notes,
+            score=item.score,
+            matched_tokens=item.matched_tokens,
+            selected=item.evaluation_item_id in selected_ids,
+        )
+        for item in ranked[:limit]
+    ]
+
+
 def _rank_assets(
     *,
     heading_text: str,
     assets: list[LibraryAsset],
+    asset_text_index: dict[int, list[str]] | None = None,
     limit: int = 3,
 ) -> list[LibraryAsset]:
     section_tokens = _tokens(heading_text)
+    heading_compact = _compact(heading_text)
+
+    def asset_score(asset: LibraryAsset) -> int:
+        asset_hint_text = ASSET_CATEGORY_HINTS.get(asset.category, "")
+        asset_texts = list((asset_text_index or {}).get(asset.id, []))[:2]
+        score = _score_text(section_tokens, asset.category, asset.title, asset_hint_text, *asset_texts)
+        compact_haystack = _compact(" ".join([asset.category, asset.title, asset_hint_text, *asset_texts]))
+        if heading_compact and heading_compact and heading_compact in compact_haystack:
+            score += 4
+        return score
+
     ranked = sorted(
         assets,
-        key=lambda asset: (-_score_text(section_tokens, asset.category, asset.title), asset.id),
+        key=lambda asset: (-asset_score(asset), asset.id),
     )
-    matched = [
-        asset for asset in ranked if _score_text(section_tokens, asset.category, asset.title) > 0
-    ]
+    matched = [asset for asset in ranked if asset_score(asset) > 0]
     return matched[:limit]
 
 
-def _company_facts_from_assets(assets: list[LibraryAsset]) -> list[str]:
-    return [f"{asset.category}: {asset.title}".strip(": ") for asset in assets]
+def _asset_diagnostics(
+    *,
+    heading_text: str,
+    assets: list[LibraryAsset],
+    asset_text_index: dict[int, list[str]] | None = None,
+    limit: int = 6,
+) -> list[PlannerAssetDiagnostic]:
+    section_tokens = _tokens(heading_text)
+    heading_compact = _compact(heading_text)
+
+    diagnostics: list[PlannerAssetDiagnostic] = []
+    for asset in assets:
+        asset_hint_text = ASSET_CATEGORY_HINTS.get(asset.category, "")
+        asset_texts = list((asset_text_index or {}).get(asset.id, []))[:2]
+        matched_tokens = _matched_tokens(
+            section_tokens,
+            asset.category,
+            asset.title,
+            asset_hint_text,
+            *asset_texts,
+        )
+        compact_haystack = _compact(" ".join([asset.category, asset.title, asset_hint_text, *asset_texts]))
+        compact_heading_match = bool(heading_compact and heading_compact in compact_haystack)
+        score = len(matched_tokens) + (4 if compact_heading_match else 0)
+        diagnostics.append(
+            PlannerAssetDiagnostic(
+                asset_id=asset.id,
+                category=asset.category,
+                title=asset.title,
+                score=score,
+                matched_tokens=matched_tokens,
+                compact_heading_match=compact_heading_match,
+                selected=False,
+                snippet_previews=[re.sub(r"\s+", " ", text).strip()[:220] for text in asset_texts if text.strip()],
+            )
+        )
+
+    ranked = sorted(diagnostics, key=lambda item: (-item.score, item.asset_id))
+    selected_ids = set([item.asset_id for item in ranked if item.score > 0][:3])
+    visible = ranked[:limit]
+    return [
+        PlannerAssetDiagnostic(
+            asset_id=item.asset_id,
+            category=item.category,
+            title=item.title,
+            score=item.score,
+            matched_tokens=item.matched_tokens,
+            compact_heading_match=item.compact_heading_match,
+            selected=item.asset_id in selected_ids,
+            snippet_previews=item.snippet_previews,
+        )
+        for item in visible
+    ]
+
+
+def _company_facts_from_assets(
+    *,
+    heading_text: str,
+    assets: list[LibraryAsset],
+    asset_text_index: dict[int, list[str]] | None = None,
+) -> list[str]:
+    if not assets:
+        return []
+
+    section_tokens = _tokens(heading_text)
+    lines: list[str] = []
+    for asset in assets:
+        lines.append(f"[{asset.category}] {asset.title}".strip())
+        snippets = list((asset_text_index or {}).get(asset.id, []))
+        if not snippets:
+            continue
+        ranked_snippets = sorted(
+            snippets,
+            key=lambda text: (-_score_text(section_tokens, asset.category, asset.title, text), len(text)),
+        )
+        selected = [snippet for snippet in ranked_snippets if _score_text(section_tokens, asset.category, asset.title, snippet) > 0]
+        if not selected:
+            selected = ranked_snippets
+        for snippet in selected[:2]:
+            compact = re.sub(r"\s+", " ", snippet).strip()
+            if compact:
+                lines.append(f"- {compact[:420]}")
+    return lines[:9]
 
 
 def _playbook_for_heading(heading_text: str) -> tuple[str, str]:
@@ -218,6 +546,7 @@ def _search_tasks_for_heading(
     section: OutlineSection,
     heading_text: str,
     project_name: str,
+    assigned_assets: list[LibraryAsset],
 ) -> list[PlannedSearchTask]:
     normalized_heading = heading_text.replace(" ", "")
     tasks: list[PlannedSearchTask] = []
@@ -231,6 +560,9 @@ def _search_tasks_for_heading(
                 expected_output="최신 관련 정보 요약",
             )
         )
+
+    if assigned_assets and any(keyword in normalized_heading for keyword in INTERNAL_EVIDENCE_SEARCH_KEYWORDS):
+        return tasks
 
     for keywords, suffix, reason, expected_output in SEARCH_RULES:
         if not any(keyword in normalized_heading for keyword in keywords):
@@ -262,6 +594,7 @@ def build_draft_plan(
     requirements: list[RfpRequirementItem],
     evaluation_items: list[EvaluationItem],
     assets: list[LibraryAsset],
+    asset_text_index: dict[int, list[str]] | None = None,
 ) -> DraftPlanResult:
     warnings: list[str] = []
     if not sections:
@@ -280,12 +613,17 @@ def build_draft_plan(
             heading_text=heading_text,
             evaluation_items=evaluation_items,
         )
-        section_assets = _rank_assets(heading_text=heading_text, assets=assets)
+        section_assets = _rank_assets(
+            heading_text=heading_text,
+            assets=assets,
+            asset_text_index=asset_text_index,
+        )
         section_goal, draft_guidance = _playbook_for_heading(heading_text)
         search_tasks = _search_tasks_for_heading(
             section=section,
             heading_text=heading_text,
             project_name=project_name,
+            assigned_assets=section_assets,
         )
 
         section_plans.append(
@@ -297,7 +635,11 @@ def build_draft_plan(
                 assigned_requirements=section_requirements,
                 assigned_evaluation_items=section_evaluation_items,
                 assigned_assets=section_assets,
-                assigned_company_facts=_company_facts_from_assets(section_assets),
+                assigned_company_facts=_company_facts_from_assets(
+                    heading_text=heading_text,
+                    assets=section_assets,
+                    asset_text_index=asset_text_index,
+                ),
                 draft_guidance=draft_guidance,
                 search_tasks=search_tasks,
             )
@@ -307,4 +649,75 @@ def build_draft_plan(
         ready=bool(sections) and bool(extraction.raw_text.strip()),
         warnings=warnings,
         sections=section_plans,
+    )
+
+
+def build_draft_plan_debug(
+    *,
+    project_name: str,
+    sections: list[OutlineSection],
+    extraction: RfpExtraction,
+    requirements: list[RfpRequirementItem],
+    evaluation_items: list[EvaluationItem],
+    assets: list[LibraryAsset],
+    asset_text_index: dict[int, list[str]] | None = None,
+) -> DraftPlanDebugResult:
+    warnings: list[str] = []
+    if not sections:
+        warnings.append("저장된 목차가 없습니다. Outline 페이지에서 목차를 먼저 저장해 주세요.")
+    if not extraction.raw_text.strip():
+        warnings.append("RFP 추출 결과가 없습니다. RFP 화면에서 추출을 먼저 실행해 주세요.")
+
+    heading_paths = _build_heading_paths(sections)
+    section_debugs: list[DraftSectionPlanDebug] = []
+
+    for section in sections:
+        heading_text = _heading_text(section)
+        heading_path = heading_paths.get(section.id, [heading_text])
+        selected_assets = _rank_assets(
+            heading_text=heading_text,
+            assets=assets,
+            asset_text_index=asset_text_index,
+        )
+        section_goal, draft_guidance = _playbook_for_heading(heading_text)
+        search_tasks = _search_tasks_for_heading(
+            section=section,
+            heading_text=heading_text,
+            project_name=project_name,
+            assigned_assets=selected_assets,
+        )
+        section_debugs.append(
+            DraftSectionPlanDebug(
+                section_id=section.id,
+                heading_text=heading_text,
+                heading_path=heading_path,
+                section_tokens=sorted(_tokens(heading_text)),
+                section_goal=section_goal,
+                draft_guidance=draft_guidance,
+                assigned_company_facts=_company_facts_from_assets(
+                    heading_text=heading_text,
+                    assets=selected_assets,
+                    asset_text_index=asset_text_index,
+                ),
+                search_tasks=search_tasks,
+                requirement_candidates=_requirement_diagnostics(
+                    heading_text=heading_text,
+                    requirements=requirements,
+                ),
+                evaluation_candidates=_evaluation_diagnostics(
+                    heading_text=heading_text,
+                    evaluation_items=evaluation_items,
+                ),
+                asset_candidates=_asset_diagnostics(
+                    heading_text=heading_text,
+                    assets=assets,
+                    asset_text_index=asset_text_index,
+                ),
+            )
+        )
+
+    return DraftPlanDebugResult(
+        ready=bool(sections) and bool(extraction.raw_text.strip()),
+        warnings=warnings,
+        sections=section_debugs,
     )

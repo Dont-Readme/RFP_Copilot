@@ -14,6 +14,7 @@ from app.models.library import LibraryAsset, ProjectAssetLink  # noqa: E402,F401
 from app.models.outline import Citation, OutlineSection  # noqa: E402,F401
 from app.models.draft import (  # noqa: E402,F401
     DraftChatMessage,
+    DraftPlanningConfig,
     DraftSearchTask,
     DraftSection,
     DraftSectionPlan,
